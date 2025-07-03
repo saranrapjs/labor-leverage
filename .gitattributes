@@ -1,0 +1,2 @@
+pkg/edgar/tickers.json filter=lfs diff=lfs merge=lfs -text
+pkg/ixbrl/fixtures/nyt-20241231.htm filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Ticker}}{{if .CompanyName}} - {{.CompanyName}}{{end}} - Edgar Financial Data</title>
+    <link rel="stylesheet" href="../styles.css">
+    <style>
+        .salary-comparison {
+            margin: 20px 0;
+            padding: 20px;
+            background-color: #fff;
+        }
+        
+        .bar-item {
+            margin-bottom: 15px;
+        }
+        
+        .bar-label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #333;
+        }
+        
+        .bar-container {
+            position: relative;
+            display: flex;
+            align-items: center;
+            height: 40px;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .bar {
+            height: 100%;
+            transition: width 0.3s ease;
+            min-width: 2px;
+        }
+        
+        .bar-median {
+            background: linear-gradient(90deg, #28a745, #20c997);
+        }
+        
+        .bar-ceo {
+            background: linear-gradient(90deg, #dc3545, #fd7e14);
+        }
+        
+        .bar-value {
+            position: absolute;
+            right: 10px;
+            font-weight: bold;
+            color: #333;
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+        
+        .ratio-display {
+            margin-top: 15px;
+            text-align: center;
+            font-size: 1.1em;
+            color: #495057;
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-content">
+            <a href="../" class="nav-brand">Labor Leverage</a>
+        </div>
+    </nav>
+
+    <div class="main-content">
+        <h1>{{.Ticker}}{{if .CompanyName}} - {{.CompanyName}}{{end}}</h1>
+        {{if .EmployeesCount}}
+        <section>
+            <h2>Number of employees: {{.EmployeesCount}}</h2>
+            <p>Some companies choose to report the number of employees as part of "Human Capital" disclosures.</p>
+        </section>
+        {{end}}
+        {{with .CEOPayRatio}}
+        <section>
+            <h2>CEO Pay Ratio</h2>
+            <div class="salary-comparison">
+                <div class="salary-bar-chart">
+                    <div class="bar-item">
+                        <div class="bar-label">Median employee compensation</div>
+                        <div class="bar-container">
+                            <div class="bar bar-median" style="width:{{ratio .Median .CEO}}%;"></div>
+                            <span class="bar-value">{{formatCurrency .Median}}</span>
+                        </div>
+                    </div>
+                    <div class="bar-item">
+                        <div class="bar-label">CEO compensation</div>
+                        <div class="bar-container">
+                            <div class="bar bar-ceo" style="width:100%;"></div>
+                            <span class="bar-value">{{formatCurrency .CEO}}</span>
+                        </div>
+                        <div>Paid as much as {{divide .CEO .Median}} workers at the median salary.</div>
+                    </div>
+                </div>
+            </div>
+            <details>
+                <summary>View detailed disclosure</summary>
+                <pre class="ceo-ratio">{{.Text}}</pre>
+            </details>
+            <p>The ratio of the median employee's salary relative to the CEO's salary. Companies are required to report this following <a href="https://en.wikipedia.org/wiki/CEO_Pay_Ratio">the 2008 financial crisis</a>.</p>
+        </section>
+        {{end}}
+
+        {{if .NetIncomeLoss}}
+        <section>
+            <h2>Net Profit or Loss</h2>
+            <table class="filings-table">
+                <thead>
+                    <tr>
+                        <th>Period</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .NetIncomeLoss}}
+                    <tr>
+                        <td>{{.Context.Period.FormattedValue}}</td>
+                        <td>{{formatNonFractionPerEmployee . $.EmployeesCount}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            <p>The portion of profit or loss for the period, net of income taxes.</p>
+        </section>
+        {{end}}
+
+        {{if .Buybacks}}
+        <section>
+            <h2>Stock Buybacks</h2>
+            <table class="filings-table">
+                <thead>
+                    <tr>
+                        <th>Period</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Buybacks}}
+                    <tr>
+                        <td>{{.Context.Period.FormattedValue}}</td>
+                        <td>{{formatNonFractionPerEmployee . $.EmployeesCount}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            <p>Stock buybacks are the repurchase by the company of its own shares. They are sometimes used as an alternative to stock dividends. Boards and executives are under no legal obligation to execute stock buybacks: the choice to repurchase shares is like any other choice of where a company chooses to spend its profits.</p>
+        </section>
+        {{end}}
+
+        {{if .Cash}}
+        <section>
+            <h2>Cash and Cash Equivalents</h2>
+            <table class="filings-table">
+                <thead>
+                    <tr>
+                        <th>Period</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Cash}}
+                    <tr>
+                        <td>{{.Context.Period.FormattedValue}}</td>
+                        <td>{{formatNonFractionPerEmployee . $.EmployeesCount}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            <p>These are liquid assets a company may have on hand.</p>
+        </section>
+        {{end}}
+
+        {{if .ExecCompensationHTML}}
+        <section>
+            <h2>Executive Compensation</h2>
+            {{range .ExecCompensationHTML}}
+            <div class="compensation-table">
+                <iframe srcdoc="{{. | html}}" onload="this.style.height = this.contentWindow.document.documentElement.scrollHeight + 'px';"></iframe>
+            </div>
+            {{end}}
+        </section>
+        {{end}}
+        <h2>Sourced from the following SEC reports:</h2>
+        {{if .Filings}}
+        <table class="filings-table">
+            <thead>
+                <tr>
+                    <th>Form Type</th>
+                    <th>Report Date</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Filings}}
+                <tr>
+                    <td><a target="_blank" href="{{.URL}}">{{.Form}}</a></td>
+                    <td>{{.ReportDate}}</td>
+                    <td class="form-description">
+                        {{if eq .Form "10-K"}}
+                            Annual report providing comprehensive overview of business, financial condition, and results of operations. Required annually within 60-90 days of fiscal year end.
+                        {{else if eq .Form "10-Q"}}
+                            Quarterly report with unaudited financial statements and updates on financial position. Filed within 40-45 days of quarter end for first three quarters.
+                        {{else if eq .Form "DEF 14A"}}
+                            Definitive proxy statement sent to shareholders before annual meeting. Contains executive compensation details, board information, and voting matters.
+                        {{else if eq .Form "8-K"}}
+                            Current report filed to announce major corporate events or changes within 4 business days of occurrence.
+                        {{else if eq .Form "S-1"}}
+                            Registration statement for new securities, typically used for initial public offerings (IPOs).
+                        {{else if eq .Form "SC 13G"}}
+                            Schedule filed by institutional investors disclosing beneficial ownership of 5% or more of a company's shares.
+                        {{else if eq .Form "SC 13D"}}
+                            Schedule filed when acquiring beneficial ownership of 5% or more with intent to influence control of the company.
+                        {{else}}
+                            SEC filing form {{.Form}}
+                        {{end}}
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+        {{else}}
+        <p class="no-data">No filings data available</p>
+        {{end}}
+    </div>
+</body>
+</html>

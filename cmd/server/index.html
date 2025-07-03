@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Labor Leverage - SEC Filing Search</title>
+    <link rel="stylesheet" href="./styles.css">
+    <style>
+        .search-container {
+            position: relative;
+            margin-bottom: 30px;
+        }
+
+        #search-input {
+            width: 100%;
+            padding: 12px 16px;
+            font-size: 18px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            font-family: charter;
+            box-sizing: border-box;
+        }
+
+        #search-input:focus {
+            outline: none;
+            border-color: #007cba;
+        }
+
+        #search-results {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-top: none;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+        }
+
+        .search-result {
+            padding: 12px 16px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+        }
+
+        .search-result:hover {
+            background: #f5f5f5;
+        }
+
+        .search-result:last-child {
+            border-bottom: none;
+        }
+
+        .ticker {
+            font-weight: bold;
+            color: #007cba;
+        }
+
+        .company-title {
+            color: #666;
+            font-size: 14px;
+            margin-top: 4px;
+        }
+
+        .instructions {
+            text-align: center;
+            color: #666;
+            margin-top: 20px;
+        }
+
+        .intro-text {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+
+        .page-title {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-content">
+            <a href="./" class="nav-brand">Labor Leverage</a>
+    </nav>
+
+    <div class="main-content">
+        <div class="container">
+            <h1 class="page-title">SEC Filing Search</h1>
+            <p class="intro-text">
+                Search for company ticker symbols to view SEC filing data including CEO pay ratios, stock buybacks, and executive compensation.
+            </p>
+        
+        <div class="search-container">
+            <input type="text" id="search-input" placeholder="Search for ticker symbol or company name..." autocomplete="off">
+            <div id="search-results"></div>
+        </div>
+        
+            <div class="instructions">
+                Start typing a ticker symbol (e.g., AAPL, MSFT) or company name to search.
+            </div>
+        </div>
+        <div class="preamble">
+            <p>This tool is meant to help workers inform themselves about their employer's finances, using public financial data from filings with the SEC.</p>
+            <p>Inspired by a conversation with John Cruickshank, Nora Keller, and Olov Sundstrom, and previous workshops run by Stacy Cowley.</p>
+        </div>
+    </div>
+
+    <script>
+        // Ticker data from server
+        const tickersData = {{.}};
+        
+        // Convert to array for easier searching
+        const tickers = Object.values(tickersData);
+        
+        const searchInput = document.getElementById('search-input');
+        const searchResults = document.getElementById('search-results');
+        
+        // Fuzzy search function
+        function fuzzySearch(query, items) {
+            if (!query.trim()) return [];
+            
+            const normalizedQuery = query.toLowerCase();
+            
+            return items.filter(item => {
+                const ticker = item.ticker.toLowerCase();
+                const title = item.title.toLowerCase();
+                
+                // Direct match on ticker or title
+                if (ticker.includes(normalizedQuery) || title.includes(normalizedQuery)) {
+                    return true;
+                }
+                
+                // Fuzzy match on ticker (allowing for minor typos)
+                if (ticker.length >= normalizedQuery.length) {
+                    let matchCount = 0;
+                    let queryIndex = 0;
+                    
+                    for (let i = 0; i < ticker.length && queryIndex < normalizedQuery.length; i++) {
+                        if (ticker[i] === normalizedQuery[queryIndex]) {
+                            matchCount++;
+                            queryIndex++;
+                        }
+                    }
+                    
+                    // Allow match if most characters match
+                    if (matchCount >= Math.ceil(normalizedQuery.length * 0.7)) {
+                        return true;
+                    }
+                }
+                
+                return false;
+            }).sort((a, b) => {
+                // Sort by relevance: exact ticker matches first, then title matches
+                const aTickerMatch = a.ticker.toLowerCase().startsWith(normalizedQuery);
+                const bTickerMatch = b.ticker.toLowerCase().startsWith(normalizedQuery);
+                
+                if (aTickerMatch && !bTickerMatch) return -1;
+                if (!aTickerMatch && bTickerMatch) return 1;
+                
+                // Then by ticker length (shorter tickers first for better UX)
+                return a.ticker.length - b.ticker.length;
+            }).slice(0, 10); // Limit to 10 results
+        }
+        
+        // Handle search input
+        searchInput.addEventListener('input', function() {
+            const query = this.value;
+            
+            if (!query.trim()) {
+                searchResults.style.display = 'none';
+                return;
+            }
+            
+            const results = fuzzySearch(query, tickers);
+            
+            if (results.length === 0) {
+                searchResults.style.display = 'none';
+                return;
+            }
+            
+            searchResults.innerHTML = results.map(item => 
+                `<div class="search-result" data-ticker="${item.ticker}">
+                    <div class="ticker">${item.ticker}</div>
+                    <div class="company-title">${item.title}</div>
+                </div>`
+            ).join('');
+            
+            searchResults.style.display = 'block';
+        });
+        
+        // Handle result selection
+        searchResults.addEventListener('click', function(e) {
+            const result = e.target.closest('.search-result');
+            if (result) {
+                const ticker = result.dataset.ticker;
+                window.location.href = `./ticker/${ticker}`;
+            }
+        });
+        
+        // Handle Enter key
+        searchInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                const firstResult = searchResults.querySelector('.search-result');
+                if (firstResult) {
+                    const ticker = firstResult.dataset.ticker;
+                    window.location.href = `/ticker/${ticker}`;
+                }
+            }
+            
+            // Handle escape key to close results
+            if (e.key === 'Escape') {
+                searchResults.style.display = 'none';
+                this.blur();
+            }
+        });
+        
+        // Hide results when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.search-container')) {
+                searchResults.style.display = 'none';
+            }
+        });
+        
+        // Focus on search input when page loads
+        searchInput.focus();
+    </script>
+</body>
+</html>

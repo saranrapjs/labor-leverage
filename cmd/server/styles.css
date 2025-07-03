@@ -1,0 +1,201 @@
+/* Charter font family */
+@font-face {
+    font-family: charter;
+    font-style: normal;
+    font-weight: normal;
+    font-stretch: normal;
+    src: url('https://regexking.info/charter_regular.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: charter;
+    font-style: italic;
+    font-weight: normal;
+    font-stretch: normal;
+    src: url('https://regexking.info/charter_italic.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: charter;
+    font-style: normal;
+    font-weight: bold;
+    font-stretch: normal;
+    src: url('https://regexking.info/charter_bold.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: charter;
+    font-style: italic;
+    font-weight: bold;
+    font-stretch: normal;
+    src: url('https://regexking.info/charter_bold_italic.woff2') format('woff2');
+}
+
+/* Base styles */
+body {
+    font-family: charter;
+    background: rgb(255, 246, 252);
+    margin: 0;
+    padding: 0;
+}
+
+/* Navigation */
+.nav {
+    background: white;
+    border-bottom: 2px solid #ddd;
+    padding: 12px 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.nav-content {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.nav-brand {
+    font-size: 24px;
+    font-weight: bold;
+    color: #333;
+    text-decoration: none;
+}
+
+.nav-brand:hover {
+    color: #007cba;
+}
+
+.breadcrumbs {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #666;
+    font-size: 14px;
+}
+
+.breadcrumb-link {
+    color: #007cba;
+    text-decoration: none;
+}
+
+.breadcrumb-link:hover {
+    text-decoration: underline;
+}
+
+.breadcrumb-separator {
+    color: #999;
+}
+
+/* Main content */
+.main-content {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.preamble {
+    max-width: 680px;
+    margin: 0 auto;
+    color:#333;
+}
+
+/* Container for centered content */
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    background: white;
+    padding: 40px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+h1, h2 {
+    font-weight: normal;
+}
+
+/* Headers */
+h1 {
+    color: #333;
+    margin-bottom: 20px;
+}
+
+h2 {
+    color: #333;
+    margin-top: 30px;
+    margin-bottom: 15px;
+}
+
+/* Tables */
+table {
+    text-align: left;
+    border-collapse: collapse;
+    width: 100%;
+    margin: 15px 0;
+}
+
+td, th {
+    padding: 0.3rem 0.5rem;
+}
+
+thead {
+    background: rgb(242, 182, 182);
+}
+
+tbody {
+    background: white;
+}
+
+.form-description {
+    font-size: 0.9em;
+    color: #555;
+    max-width: 400px;
+    line-height: 1.4;
+}
+
+/* Code blocks */
+blockquote, pre {
+    background: rgb(252, 252, 213);
+    margin: 0;
+    padding: 1rem;
+    font-family: monospace;
+    text-wrap: wrap;
+}
+
+/* Compensation tables */
+.compensation-table iframe {
+    border: 0;
+    width: 100%;
+    background: white;
+    border: 3px dashed gray;
+}
+
+.compensation-table + .compensation-table {
+    margin-top: 1rem;
+}
+
+/* Utility classes */
+.no-data {
+    color: #999;
+    font-style: italic;
+}
+
+/* Links */
+a {
+    color: #007cba;
+}
+
+a:hover {
+    color: #005a87;
+}
+
+/* Sections */
+section {
+    margin: 30px 0;
+}
+
+footer {
+    margin-top: 50px;
+    border-top: 2px solid #eee;
+    padding-top: 30px;
+}

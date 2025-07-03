@@ -1,0 +1,6 @@
+*.db
+html
+.claude
+cmd/server/server
+cmd/load/load
+cmd/server/leverage-nix
