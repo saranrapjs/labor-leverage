@@ -15,6 +15,7 @@ import (
 	"github.com/saranrapjs/labor-leverage/pkg/db"
 	"github.com/saranrapjs/labor-leverage/pkg/edgar"
 	"github.com/saranrapjs/labor-leverage/pkg/facts"
+	"github.com/saranrapjs/labor-leverage/pkg/irs"
 	"github.com/saranrapjs/labor-leverage/pkg/ixbrl"
 	"golang.org/x/text/message"
 )
@@ -65,8 +66,9 @@ var indexTemplate = template.Must(template.New("index").Parse(indexHTML))
 const cacheMaxAge = 30 * 24 * time.Hour // 1 month
 
 type Server struct {
-	db     *db.DB
-	client *edgar.EdgarClient
+	db        *db.DB
+	client    *edgar.EdgarClient
+	irsClient *irs.IRSClient
 }
 
 func NewServer(database *db.DB) *Server {
@@ -74,9 +76,16 @@ func NewServer(database *db.DB) *Server {
 	userAgent := "Jeff Sisson (jeff@bigboy.us)"
 	client := edgar.NewEdgarClient(userAgent, 10)
 	
+	// Initialize IRS client for 2024 data
+	irsClient, err := irs.NewIRSClient("", "2024")
+	if err != nil {
+		log.Fatalf("Failed to initialize IRS client: %v", err)
+	}
+	
 	return &Server{
-		db:     database,
-		client: client,
+		db:        database,
+		client:    client,
+		irsClient: irsClient,
 	}
 }
 
@@ -272,6 +281,32 @@ func (s *Server) handleStyles(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(stylesCSS))
 }
 
+// handleIRSCompany handles GET /irs/{returnID} to fetch company XML data from IRS
+func (s *Server) handleIRSCompany(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	returnID := r.PathValue("returnID")
+	if returnID == "" {
+		http.Error(w, "returnID parameter is required", http.StatusBadRequest)
+		return
+	}
+	
+	log.Printf("Fetching IRS data for return ID: %s", returnID)
+	
+	xmlData, err := s.irsClient.FetchCompany(returnID)
+	if err != nil {
+		log.Printf("Failed to fetch company data for return ID %s: %v", returnID, err)
+		http.Error(w, fmt.Sprintf("Failed to fetch company data: %v", err), http.StatusInternalServerError)
+		return
+	}
+	
+	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+	w.Write(xmlData)
+}
+
 func main() {
 	// Initialize database
 	database, err := db.New("edgar.db")
@@ -287,6 +322,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /cik/{cik}", server.handleCik)
 	mux.HandleFunc("GET /ticker/{ticker}", server.handleTicker)
+	mux.HandleFunc("GET /irs/{returnID}", server.handleIRSCompany)
 	mux.HandleFunc("GET /all", server.handleAll)
 	mux.HandleFunc("GET /health", server.handleHealth)
 	mux.HandleFunc("GET /styles.css", server.handleStyles)
