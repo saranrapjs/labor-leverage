@@ -238,7 +238,7 @@
             <h2>Executive Compensation</h2>
             {{range .ExecCompensationHTML}}
             <div class="compensation-table">
-                <iframe srcdoc="{{. | html}}" onload="this.style.height = this.contentWindow.document.documentElement.scrollHeight + 'px';"></iframe>
+                <iframe srcdoc="{{. | html}}" onload="setTimeout(() => this.style.height = this.contentWindow.document.documentElement.scrollHeight + 'px');"></iframe>
             </div>
             {{end}}
         </section>

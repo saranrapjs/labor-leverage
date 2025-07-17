@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Labor Leverage - SEC Filing Search</title>
+    <title>Labor Leverage - employer financial data for workers</title>
     <link rel="stylesheet" href="./styles.css">
     <style>
         .search-container {
@@ -137,7 +137,7 @@
             currentAbortController = new AbortController();
             
             try {
-                const url = new URL('./api/search', window.location.origin);
+                const url = new URL('./api/search', window.location.href);
                 url.searchParams.set('q', query);
                 url.searchParams.set('limit', '10');
                 

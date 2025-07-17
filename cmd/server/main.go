@@ -126,7 +126,7 @@ func NewServer(database *db.DB) *Server {
 	client := edgar.NewEdgarClient(userAgent, 10)
 	
 	// Initialize IRS client for 2024 data
-	irsClient, err := irs.NewIRSClient("", "2024")
+	irsClient, err := irs.NewIRSClient(os.Getenv("CACHE_DIR"), "2024")
 	if err != nil {
 		log.Fatalf("Failed to initialize IRS client: %v", err)
 	}
