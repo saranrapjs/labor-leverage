@@ -36,7 +36,7 @@ type IRS990ScheduleBType struct {
 
 // ContributorInformationGrpType is Part I Column (b)
 type ContributorInformationGrpType struct {
-	ContributorNum            int                 `xml:"ContributorNum"`
+	ContributorNum            string                 `xml:"ContributorNum"`
 	ContributorBusinessName   *BusinessNameType   `xml:"ContributorBusinessName"`
 	ContributorPersonNm       string              `xml:"ContributorPersonNm"`
 	Paid527j1Ind              string              `xml:"Paid527j1Ind"`
@@ -44,7 +44,7 @@ type ContributorInformationGrpType struct {
 	ContributorUSAddress      *USAddressType      `xml:"ContributorUSAddress"`
 	ContributorForeignAddress *ForeignAddressType `xml:"ContributorForeignAddress"`
 	AddressNotApplicableCd    interface{}         `xml:"AddressNotApplicableCd"`
-	TotalContributionsAmt     int                 `xml:"TotalContributionsAmt"`
+	TotalContributionsAmt     string                 `xml:"TotalContributionsAmt"`
 	PersonContributionInd     string              `xml:"PersonContributionInd,omitempty"`
 	PayrollContributionInd    string              `xml:"PayrollContributionInd,omitempty"`
 	NoncashContributionInd    string              `xml:"NoncashContributionInd,omitempty"`

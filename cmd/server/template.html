@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{.Ticker}}{{if .CompanyName}} - {{.CompanyName}}{{end}} - Edgar Financial Data</title>
+    <title>{{if .CompanyName}} - {{.CompanyName}}{{end}} - Financial Data</title>
     <link rel="stylesheet" href="../styles.css">
     <style>
         .salary-comparison {
@@ -74,11 +74,35 @@
     </nav>
 
     <div class="main-content">
-        <h1>{{.Ticker}}{{if .CompanyName}} - {{.CompanyName}}{{end}}</h1>
+        <h1>{{if .CompanyName}}{{.CompanyName}}{{end}} ({{if .Ticker}}{{.Ticker}}{{else if .EIN}}{{.EIN}}{{end}})</h1>
         {{if .EmployeesCount}}
         <section>
-            <h2>Number of employees: {{.EmployeesCount}}</h2>
+            <h2>Number of employees: {{formatCount .EmployeesCount}}</h2>
+            {{if .Ticker}}
             <p>Some companies choose to report the number of employees as part of "Human Capital" disclosures.</p>
+            {{else}}
+            <p>Number of employees reported on IRS Form 990.</p>
+            {{end}}
+        </section>
+        {{end}}
+        {{with .NetAssets}}
+        <section>
+            <h2>Net Assets</h2>
+            <table class="filings-table">
+                <thead>
+                    <tr>
+                        <th>Period</th>
+                        <th>Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>{{.Context.Period.FormattedValue}}</td>
+                        <td>{{formatNonFractionPerEmployee . $.EmployeesCount}}</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p>The assets leftover at the end of the tax period.</p>
         </section>
         {{end}}
         {{with .CEOPayRatio}}
@@ -113,12 +137,16 @@
 
         {{if .NetIncomeLoss}}
         <section>
+            {{if .Ticker}}
             <h2>Net Profit or Loss</h2>
+            {{else}}
+            <h2>Net Revenues</h2>
+            {{end}}
             <table class="filings-table">
                 <thead>
                     <tr>
                         <th>Period</th>
-                        <th>Value</th>
+                        <th>Amount</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -130,7 +158,11 @@
                     {{end}}
                 </tbody>
             </table>
+            {{if .Ticker}}
             <p>The portion of profit or loss for the period, net of income taxes.</p>
+            {{else}}
+            <p>Revenues less expenses.</p>
+            {{end}}
         </section>
         {{end}}
 
@@ -141,7 +173,7 @@
                 <thead>
                     <tr>
                         <th>Period</th>
-                        <th>Value</th>
+                        <th>Amount</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -164,7 +196,7 @@
                 <thead>
                     <tr>
                         <th>Period</th>
-                        <th>Value</th>
+                        <th>Amount</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -179,7 +211,28 @@
             <p>These are liquid assets a company may have on hand.</p>
         </section>
         {{end}}
-
+        {{with .WorkerPay}}
+        <section>
+            <h2>Worker Pay</h2>
+            <table class="filings-table">
+                <thead>
+                    <tr>
+                        <th>Period</th>
+                        <th>Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .}}
+                    <tr>
+                        <td>{{.Context.Period.FormattedValue}}</td>
+                        <td>{{formatNonFractionPerEmployee . $.EmployeesCount}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            <p>Total compensation, including executive compensation.</p>
+        </section>
+        {{end}}
         {{if .ExecCompensationHTML}}
         <section>
             <h2>Executive Compensation</h2>
@@ -190,6 +243,8 @@
             {{end}}
         </section>
         {{end}}
+        {{/* Data sources section - show SEC or IRS depending on data type */}}
+        {{if .Ticker}}
         <h2>Sourced from the following SEC reports:</h2>
         {{if .Filings}}
         <table class="filings-table">
@@ -229,7 +284,28 @@
             </tbody>
         </table>
         {{else}}
-        <p class="no-data">No filings data available</p>
+        <p class="no-data">No SEC filings data available</p>
+        {{end}}
+        {{else if .EIN}}
+        <h2>Sourced from IRS Form 990 filings:</h2>
+        <table class="filings-table">
+            <thead>
+                <tr>
+                    <th>Form Type</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><a target="_blank" href="../irs/{{.EIN}}">IRS Form 990</a></td>
+                    <td class="form-description">
+                        Annual return filed by tax-exempt organizations to provide information about their financial activities, governance, and compliance with tax-exempt status requirements.
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        {{else}}
+        <p class="no-data">No data sources available</p>
         {{end}}
     </div>
 </body>

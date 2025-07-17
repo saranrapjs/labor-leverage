@@ -2,6 +2,7 @@ package facts
 
 import (
 	"bytes"
+	"fmt"
 	"regexp"
 	"sort"
 	"strconv"
@@ -10,25 +11,32 @@ import (
 	"unicode"
 
 	"github.com/saranrapjs/labor-leverage/pkg/edgar"
+	"github.com/saranrapjs/labor-leverage/pkg/irsform"
 	"github.com/saranrapjs/labor-leverage/pkg/ixbrl"
+	"golang.org/x/text/message"
 )
 
-// Facts represents the transformed data extracted from Edgar filings
+// Facts represents the transformed data extracted from Edgar filings or IRS returns
 type Facts struct {
 	CIK                  string               `json:"cik"`
-	Ticker               string               `json:"ticker"`
+	EIN                  string               `json:"ein,omitempty"`
+	Ticker               string               `json:"ticker,omitempty"`
 	CompanyName          string               `json:"company_name"`
-	Filings              []edgar.Filing       `json:"filings"`
-	NetIncomeLoss        []*ixbrl.NonFraction `json:"net_revenue"`
-	Buybacks             []*ixbrl.NonFraction `json:"buybacks"`
-	ExecCompensationHTML []string             `json:"exec_compensation_html"`
-	CEOPayRatio          *CEOPayRatio          `json:"ceo_pay_ratio"`
-	Cash                 []*ixbrl.NonFraction `json:"cash"`
+	Filings              []edgar.Filing       `json:"filings,omitempty"`
+	NetIncomeLoss        []*ixbrl.NonFraction `json:"net_revenue,omitempty"`
+	Buybacks             []*ixbrl.NonFraction `json:"buybacks,omitempty"`
+	ExecCompensationHTML []string             `json:"exec_compensation_html,omitempty"`
+	CEOPayRatio          *CEOPayRatio          `json:"ceo_pay_ratio,omitempty"`
+	Cash                 []*ixbrl.NonFraction `json:"cash,omitempty"`
 	EmployeesCount       int                  `json:"employees_count"`
+	TotalRevenue         int                  `json:"total_revenue,omitempty"`
+	TotalExpenses        int                  `json:"total_expenses,omitempty"`
+	NetAssets            *ixbrl.NonFraction   `json:"net_assets,omitempty"`
+	WorkerPay            []*ixbrl.NonFraction   `json:"worker_pay,omitempty"`
 }
 
-// ExtractFacts processes Edgar filing documents and extracts Facts data
-func ExtractFacts(cik, ticker, companyName string, filingDocs []edgar.Document) (*Facts, error) {
+// FromEdgar processes Edgar filing documents and extracts Facts data
+func FromEdgar(cik, ticker, companyName string, filingDocs []edgar.Document) (*Facts, error) {
 	facts := &Facts{
 		CIK:         cik,
 		Ticker:      ticker,
@@ -122,6 +130,112 @@ func ExtractFacts(cik, ticker, companyName string, filingDocs []edgar.Document) 
 	sortNonFractionsByDate(facts.Cash)
 
 	return facts, nil
+}
+
+func valueToIxFraction(val int, start, end string) *ixbrl.NonFraction {
+	return &ixbrl.NonFraction{
+		Scale: "0",
+		Content: strconv.Itoa(val),
+		Context: &ixbrl.Context{
+			Period: ixbrl.Period{
+				StartDate: start,
+				EndDate: end,
+			},
+		},
+	}
+}
+
+var printer = message.NewPrinter(message.MatchLanguage("en"))
+
+
+func irsExecComp(execs []*irsform.Form990PartVIISectionAGrp) string {
+	var b strings.Builder
+	b.WriteString(`<table style="font-family:monospace;"><thead><tr>
+		<th>Name</th>
+		<th>Title</th>
+		<th>Compensation</th>
+</tr></thead><tbody>`)
+	for _, e := range execs {
+		b.WriteString(fmt.Sprintf(`<tr>
+			<td>%s</td>
+			<td>%s</td>
+			<td>%s</td>
+		</tr>`, e.PersonNm, e.TitleTxt, printer.Sprintf("$%d", e.ReportableCompFromOrgAmt + e.OtherCompensationAmt)))
+	}
+	b.WriteString("</tbody></table>")
+	return b.String()
+}
+
+const layout = "2006-01-02"
+
+func minusOneYear(date string) (string, string) {
+	t, err := time.Parse(layout, date)
+	if err != nil {
+		return "", ""
+	}
+	return t.Add(-1 * time.Hour * 24 * 365).Format(layout), t.Add(-1 * time.Hour * 24).Format(layout)
+}
+
+// FromIRS processes IRS return data and extracts Facts data
+func FromIRS(returnDoc *irsform.Return) (*Facts, error) {
+	if returnDoc == nil {
+		return nil, fmt.Errorf("invalid return data: nil return document")
+	}
+
+	facts := &Facts{}
+
+	// Extract company name from ReturnHeader
+	if returnDoc.ReturnHeader.Filer.BusinessName.BusinessNameLine1Txt != "" {
+		facts.CompanyName = returnDoc.ReturnHeader.Filer.BusinessName.BusinessNameLine1Txt
+	}
+
+	// Handle different return types
+	switch data := returnDoc.ReturnData.(type) {
+	case *irsform.ReturnData990:
+		if data.IRS990 == nil {
+			return nil, fmt.Errorf("invalid return data: missing IRS990")
+		}
+		irs990 := data.IRS990
+		facts.EmployeesCount = irs990.TotalEmployeeCnt
+		facts.NetIncomeLoss = append(facts.NetIncomeLoss, valueToIxFraction(irs990.CYTotalRevenueAmt - irs990.CYTotalExpensesAmt, returnDoc.ReturnHeader.TaxPeriodBeginDt, returnDoc.ReturnHeader.TaxPeriodEndDt))
+
+		// facts.TotalRevenue = irs990.CYTotalRevenueAmt
+		// facts.TotalExpenses = irs990.CYTotalExpensesAmt
+		facts.NetAssets = valueToIxFraction(irs990.NetAssetsOrFundBalancesEOYAmt, returnDoc.ReturnHeader.TaxPeriodBeginDt, returnDoc.ReturnHeader.TaxPeriodEndDt)
+
+		// Use principal officer business name if available and ReturnHeader name is empty
+		if facts.CompanyName == "" && irs990.PrincipalOfcrBusinessName != nil && irs990.PrincipalOfcrBusinessName.BusinessNameLine1Txt != "" {
+			facts.CompanyName = irs990.PrincipalOfcrBusinessName.BusinessNameLine1Txt
+		}
+		facts.ExecCompensationHTML = append(facts.ExecCompensationHTML, irsExecComp(irs990.Form990PartVIISectionAGrp))
+		facts.WorkerPay = append(facts.WorkerPay, valueToIxFraction(irs990.CYSalariesCompEmpBnftPaidAmt, returnDoc.ReturnHeader.TaxPeriodBeginDt, returnDoc.ReturnHeader.TaxPeriodEndDt))
+		previousYearStart, previousYearEnd := minusOneYear(returnDoc.ReturnHeader.TaxPeriodBeginDt)
+		facts.WorkerPay = append(facts.WorkerPay, valueToIxFraction(irs990.PYSalariesCompEmpBnftPaidAmt, previousYearStart, previousYearEnd))
+	case *irsform.ReturnData990EZ:
+		if data.IRS990EZ == nil {
+			return nil, fmt.Errorf("invalid return data: missing IRS990EZ")
+		}
+		// Cast IRS990EZ from interface{} to the actual type
+		irs990ez := data.IRS990EZ
+		facts.NetIncomeLoss = append(facts.NetIncomeLoss, valueToIxFraction(irs990ez.TotalRevenueAmt - irs990ez.TotalExpensesAmt, returnDoc.ReturnHeader.TaxPeriodBeginDt, returnDoc.ReturnHeader.TaxPeriodEndDt))
+		facts.NetAssets = valueToIxFraction(irs990ez.NetAssetsOrFundBalancesEOYAmt, returnDoc.ReturnHeader.TaxPeriodBeginDt, returnDoc.ReturnHeader.TaxPeriodEndDt)
+	case *irsform.ReturnData990PF:
+		if data.IRS990PF == nil {
+			return nil, fmt.Errorf("invalid return data: missing IRS990PF")
+		}
+		// TODO!
+	default:
+		return nil, fmt.Errorf("unsupported return type: %T", data)
+	}
+	sortNonFractionsByDate(facts.NetIncomeLoss)
+	sortNonFractionsByDate(facts.Buybacks)
+	sortNonFractionsByDate(facts.Cash)
+	return facts, nil
+}
+
+// ExtractFacts is a backwards compatibility wrapper for FromEdgar
+func ExtractFacts(cik, ticker, companyName string, filingDocs []edgar.Document) (*Facts, error) {
+	return FromEdgar(cik, ticker, companyName, filingDocs)
 }
 
 type CEOPayRatio struct {

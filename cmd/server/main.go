@@ -16,6 +16,7 @@ import (
 	"github.com/saranrapjs/labor-leverage/pkg/edgar"
 	"github.com/saranrapjs/labor-leverage/pkg/facts"
 	"github.com/saranrapjs/labor-leverage/pkg/irs"
+	"github.com/saranrapjs/labor-leverage/pkg/irsform"
 	"github.com/saranrapjs/labor-leverage/pkg/ixbrl"
 	"golang.org/x/text/message"
 )
@@ -36,11 +37,52 @@ var templateFuncs = template.FuncMap{
 	"ratio": func(a,b float64) string {
 		return fmt.Sprintf("%.0f", (a/b) * 100)
 	},
-	"divide": func(a,b float64) string {
-		return fmt.Sprintf("%.0f", a/b)
+	"divide": func(a,b interface{}) string {
+		var aVal, bVal float64
+		
+		switch v := a.(type) {
+		case float64:
+			aVal = v
+		case int:
+			aVal = float64(v)
+		default:
+			return "N/A"
+		}
+		
+		switch v := b.(type) {
+		case float64:
+			bVal = v
+		case int:
+			bVal = float64(v)
+		default:
+			return "N/A"
+		}
+		
+		if bVal == 0 {
+			return "N/A"
+		}
+		
+		return fmt.Sprintf("%.0f", aVal/bVal)
 	},
-	"formatCurrency": func(val float64) string {
-		return printer.Sprintf("$%.0f", val)
+	"formatCurrency": func(val interface{}) string {
+		switch v := val.(type) {
+		case float64:
+			return printer.Sprintf("$%.0f", v)
+		case int:
+			return printer.Sprintf("$%d", v)
+		default:
+			return fmt.Sprintf("$%v", v)
+		}
+	},
+	"formatCount": func(val interface{}) string {
+		switch v := val.(type) {
+		case float64:
+			return printer.Sprintf("%.0f", v)
+		case int:
+			return printer.Sprintf("%d", v)
+		default:
+			return fmt.Sprintf("%v", v)
+		}
 	},
 	"formatNonFraction": func(nf *ixbrl.NonFraction) string {
 		val := nf.ScaledNumber()
@@ -64,6 +106,12 @@ var tpl = template.Must(template.New("facts").Funcs(templateFuncs).Parse(templat
 var indexTemplate = template.Must(template.New("index").Parse(indexHTML))
 
 const cacheMaxAge = 30 * 24 * time.Hour // 1 month
+
+// OrganizationItem represents a simplified organization with just title and path
+type OrganizationItem struct {
+	Title string `json:"title"` // Company/organization name
+	Path  string `json:"path"`  // URL path to access the organization
+}
 
 type Server struct {
 	db        *db.DB
@@ -156,9 +204,48 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	w.Header().Set("Content-Type", "text/html")
-	err := indexTemplate.Execute(w, edgar.TickersData)
+	err := indexTemplate.Execute(w, nil)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error rendering template: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+// handleOrganizationsJSON handles GET /api/organizations.json to return organization data as JSON
+func (s *Server) handleOrganizationsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	var organizations []OrganizationItem
+	
+	// Add Edgar data
+	for _, ticker := range edgar.TickersData {
+		organizations = append(organizations, OrganizationItem{
+			Title: ticker.Title,
+			Path:  fmt.Sprintf("/ticker/%s", ticker.Ticker),
+		})
+	}
+	
+	eins := map[string]bool{}
+
+	// Add IRS data
+	for _, nonprofit := range s.irsClient.NonProfits {
+		if _, seen := eins[nonprofit.EIN]; seen {
+			continue
+		}
+		eins[nonprofit.EIN] = true
+		organizations = append(organizations, OrganizationItem{
+			Title: nonprofit.Name,
+			Path:  fmt.Sprintf("/irs-facts/%s", nonprofit.EIN),
+		})
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=3600") // Cache for 1 hour
+	if err := json.NewEncoder(w).Encode(organizations); err != nil {
+		http.Error(w, "Failed to encode JSON", http.StatusInternalServerError)
 		return
 	}
 }
@@ -281,30 +368,96 @@ func (s *Server) handleStyles(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(stylesCSS))
 }
 
-// handleIRSCompany handles GET /irs/{returnID} to fetch company XML data from IRS
+// handleIRSCompany handles GET /irs/{ein} to fetch company XML data from IRS
 func (s *Server) handleIRSCompany(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	
-	returnID := r.PathValue("returnID")
-	if returnID == "" {
-		http.Error(w, "returnID parameter is required", http.StatusBadRequest)
+	ein := r.PathValue("ein")
+	if ein == "" {
+		http.Error(w, "EIN parameter is required", http.StatusBadRequest)
 		return
 	}
 	
-	log.Printf("Fetching IRS data for return ID: %s", returnID)
+	log.Printf("Fetching IRS data for EIN: %s", ein)
 	
-	xmlData, err := s.irsClient.FetchCompany(returnID)
+	// Find the nonprofit to get the return type
+	var returnType string
+	for _, np := range s.irsClient.NonProfits {
+		if strings.EqualFold(np.EIN, ein) && irsform.IsSupportedReturnType(np.ReturnType) {
+			returnType = np.ReturnType
+			break
+		}
+	}
+	
+	if returnType == "" {
+		http.Error(w, fmt.Sprintf("EIN %s not found or unsupported return type", ein), http.StatusNotFound)
+		return
+	}
+	
+	xmlString, err := s.irsClient.FetchCompany(ein)
 	if err != nil {
-		log.Printf("Failed to fetch company data for return ID %s: %v", returnID, err)
+		log.Printf("Failed to fetch company data for EIN %s: %v", ein, err)
 		http.Error(w, fmt.Sprintf("Failed to fetch company data: %v", err), http.StatusInternalServerError)
 		return
 	}
 	
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	w.Write(xmlData)
+	w.Write([]byte(xmlString))
+}
+
+// handleIRSFacts handles GET /irs-facts/{ein} to extract Facts from IRS return data
+func (s *Server) handleIRSFacts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	ein := r.PathValue("ein")
+	if ein == "" {
+		http.Error(w, "EIN parameter is required", http.StatusBadRequest)
+		return
+	}
+	
+	log.Printf("Extracting Facts from IRS data for EIN: %s", ein)
+	
+	// Fetch the XML data
+	xmlData, err := s.irsClient.FetchCompany(ein)
+	if err != nil {
+		log.Printf("Failed to fetch company data for EIN %s: %v", ein, err)
+		http.Error(w, fmt.Sprintf("Failed to fetch company data: %v", err), http.StatusInternalServerError)
+		return
+	}
+	
+	// Parse the XML data
+	reader := strings.NewReader(string(xmlData))
+	returnData, err := irsform.Parse(reader)
+	if err != nil {
+		log.Printf("Failed to parse XML data for EIN %s: %v", ein, err)
+		http.Error(w, fmt.Sprintf("Failed to parse XML data: %v", err), http.StatusInternalServerError)
+		return
+	}
+	
+	// Extract facts using FromIRS (now handles all supported return types)
+	factData, err := facts.FromIRS(returnData)
+	if err != nil {
+		log.Printf("Failed to extract facts from IRS data for EIN %s: %v", ein, err)
+		http.Error(w, fmt.Sprintf("Failed to extract facts: %v", err), http.StatusInternalServerError)
+		return
+	}
+	
+	// Set the EIN in the facts data
+	factData.EIN = ein
+	
+	// Return facts as HTML using the same template as ticker endpoint
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := tpl.Execute(w, factData); err != nil {
+		log.Printf("Failed to execute template for EIN %s: %v", ein, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 }
 
 func main() {
@@ -322,7 +475,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /cik/{cik}", server.handleCik)
 	mux.HandleFunc("GET /ticker/{ticker}", server.handleTicker)
-	mux.HandleFunc("GET /irs/{returnID}", server.handleIRSCompany)
+	mux.HandleFunc("GET /irs/{ein}", server.handleIRSCompany)
+	mux.HandleFunc("GET /irs-facts/{ein}", server.handleIRSFacts)
+	mux.HandleFunc("GET /api/organizations.json", server.handleOrganizationsJSON)
 	mux.HandleFunc("GET /all", server.handleAll)
 	mux.HandleFunc("GET /health", server.handleHealth)
 	mux.HandleFunc("GET /styles.css", server.handleStyles)

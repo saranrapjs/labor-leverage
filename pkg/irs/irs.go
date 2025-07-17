@@ -12,6 +12,7 @@ import (
 
 	"github.com/ozkatz/cloudzip/pkg/remote"
 	"github.com/ozkatz/cloudzip/pkg/zipfile"
+	"github.com/saranrapjs/labor-leverage/pkg/irsform"
 )
 
 const (
@@ -20,15 +21,17 @@ const (
 
 type NonProfit struct {
 	Name     string
+	EIN      string
 	ReturnID string
 	BatchID  string
 	ObjectID string
+	ReturnType string
 }
 
 type IRSClient struct {
 	cacheFile string
 	year      string
-	nonprofits []NonProfit
+	NonProfits []NonProfit
 }
 
 func NewIRSClient(cacheDir, year string) (*IRSClient, error) {
@@ -90,41 +93,49 @@ func (c *IRSClient) parseRecords(records [][]string) error {
 
 	header := records[0]
 	nameCol := -1
+	einCol := -1
 	returnIDCol := -1
 	xmlBatchIDCol := -1
 	objectIDCol := -1
+	returnTypeCol := -1
 
 	for i, col := range header {
 		switch col {
 		case "TAXPAYER_NAME":
 			nameCol = i
+		case "EIN":
+			einCol = i
 		case "RETURN_ID":
 			returnIDCol = i
 		case "XML_BATCH_ID":
 			xmlBatchIDCol = i
 		case "OBJECT_ID":
 			objectIDCol = i
+		case "RETURN_TYPE":
+			returnTypeCol = i
 		}
 	}
 
-	if nameCol == -1 || returnIDCol == -1 || xmlBatchIDCol == -1 || objectIDCol == -1 {
+	if nameCol == -1 || einCol == -1 || returnIDCol == -1 || xmlBatchIDCol == -1 || objectIDCol == -1 || returnTypeCol == -1 {
 		return fmt.Errorf("required columns not found in CSV")
 	}
 
 	nonprofits := make([]NonProfit, 0, len(records)-1)
 	for i := 1; i < len(records); i++ {
 		record := records[i]
-		if len(record) > nameCol && len(record) > returnIDCol && len(record) > xmlBatchIDCol && len(record) > objectIDCol {
+		if len(record) > nameCol && len(record) > einCol && len(record) > returnIDCol && len(record) > xmlBatchIDCol && len(record) > objectIDCol {
 			nonprofits = append(nonprofits, NonProfit{
 				Name:     record[nameCol],
+				EIN:      record[einCol],
 				ReturnID: record[returnIDCol],
 				BatchID:  record[xmlBatchIDCol],
 				ObjectID: record[objectIDCol],
+				ReturnType: record[returnTypeCol],
 			})
 		}
 	}
 
-	c.nonprofits = nonprofits
+	c.NonProfits = nonprofits
 	return nil
 }
 
@@ -155,21 +166,21 @@ func (c *IRSClient) fetchAndCacheCSV() error {
 	return nil
 }
 
-func (c *IRSClient) FetchCompany(returnID string) ([]byte, error) {
-	if len(c.nonprofits) == 0 {
+func (c *IRSClient) FetchCompany(ein string) ([]byte, error) {
+	if len(c.NonProfits) == 0 {
 		return nil, fmt.Errorf("no nonprofit data loaded")
 	}
 
 	var nonprofit *NonProfit
-	for _, np := range c.nonprofits {
-		if strings.EqualFold(np.ReturnID, returnID) {
+	for _, np := range c.NonProfits {
+		if strings.EqualFold(np.EIN, ein) && irsform.IsSupportedReturnType(np.ReturnType) {
 			nonprofit = &np
 			break
 		}
 	}
 
 	if nonprofit == nil {
-		return nil, fmt.Errorf("return ID %s not found", returnID)
+		return nil, fmt.Errorf("EIN %s not found", ein)
 	}
 
 	batchID := strings.ToUpper(nonprofit.BatchID)

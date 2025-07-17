@@ -4,26 +4,42 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"slices"
 )
+
+// SupportedReturnTypes contains the return types that can be unmarshalled by this package
+var SupportedReturnTypes = []string{"990", "990EZ"}
+
+// IsSupportedReturnType checks if a return type is supported for parsing
+func IsSupportedReturnType(returnType string) bool {
+	return slices.Contains(SupportedReturnTypes, returnType)
+}
 
 // ReturnDataInterface represents the interface that all return data types must implement
 type ReturnDataInterface interface {
 	GetFormType() string
 }
 
+// Filer represents the filer information in the return header
+type Filer struct {
+	BusinessName BusinessNameType `xml:"BusinessName"`
+}
+
 // ReturnHeader represents the header section of an IRS return
 type ReturnHeader struct {
-	ReturnTypeCd string `xml:"ReturnTypeCd"`
-	// Add other fields as needed
+	ReturnTypeCd     string `xml:"ReturnTypeCd"`
+	Filer            Filer  `xml:"Filer"`
+	TaxPeriodEndDt   string `xml:"TaxPeriodEndDt"`
+	TaxPeriodBeginDt string `xml:"TaxPeriodBeginDt"`
 }
 
 // Return is an IRS Return - wraps around Return Header and Return Data.
 // Used for forms 990, 990EZ and 990PF.
 type Return struct {
-	XMLName           xml.Name             `xml:"Return"`
-	ReturnVersionAttr string               `xml:"returnVersion,attr"`
-	ReturnHeader      ReturnHeader         `xml:"ReturnHeader"`
-	ReturnData        ReturnDataInterface  `xml:"-"`
+	XMLName           xml.Name            `xml:"Return"`
+	ReturnVersionAttr string              `xml:"returnVersion,attr"`
+	ReturnHeader      ReturnHeader        `xml:"ReturnHeader"`
+	ReturnData        ReturnDataInterface `xml:"-"`
 }
 
 // Parse parses an XML document and returns a Return struct

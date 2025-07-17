@@ -8,7 +8,7 @@ func (r *ReturnData990EZ) GetFormType() string {
 // ReturnData is Common return data attributes
 type ReturnData990EZ struct {
 	ReturnDataAttributes           interface{}
-	IRS990EZ                       interface{}   `xml:"IRS990EZ"`
+	IRS990EZ                       *IRS990EZ   `xml:"IRS990EZ"`
 	IRS990ScheduleA                interface{}   `xml:"IRS990ScheduleA,omitempty"`
 	IRS990ScheduleB                interface{}   `xml:"IRS990ScheduleB,omitempty"`
 	IRS990ScheduleC                interface{}   `xml:"IRS990ScheduleC,omitempty"`

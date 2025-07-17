@@ -91,32 +91,47 @@
 
     <div class="main-content">
         <div class="container">
-            <h1 class="page-title">SEC Filing Search</h1>
+            <h1 class="page-title">Organization Search</h1>
             <p class="intro-text">
-                Search for company ticker symbols to view SEC filing data including CEO pay ratios, stock buybacks, and executive compensation.
+                Search for public companies (SEC filings) or nonprofits (IRS filings) to view financial data including compensation, revenue, and expenses.
             </p>
         
         <div class="search-container">
-            <input type="text" id="search-input" placeholder="Search for ticker symbol or company name..." autocomplete="off">
+            <input type="text" id="search-input" placeholder="Search for ticker symbol, company name, or nonprofit..." autocomplete="off">
             <div id="search-results"></div>
         </div>
         
             <div class="instructions">
-                Start typing a ticker symbol (e.g., AAPL, MSFT) or company name to search.
+                Start typing a ticker symbol (e.g., AAPL, MSFT), company name, or nonprofit organization to search.
             </div>
         </div>
         <div class="preamble">
-            <p>This tool is meant to help workers inform themselves about their employer's finances, using public financial data from filings with the SEC.</p>
-            <p>Inspired by a conversation with John Cruickshank, Nora Keller, and Olov Sundstrom, and previous workshops run by Stacy Cowley.</p>
+            <p>This tool is meant to help workers inform themselves about their employer's finances, using public financial data from filings with the SEC (for public companies) and IRS (for nonprofits).</p>
+            <p>Inspired by a conversation with John Cruickshank, Nora Keller, and Olov Sundstrom, and previous workshops run with Stacy Cowley.</p>
         </div>
     </div>
 
-    <script>
-        // Ticker data from server
-        const tickersData = {{.}};
+    <script type="module">
+        // Load organization data from JSON endpoint
+        let organizations = [];
         
-        // Convert to array for easier searching
-        const tickers = Object.values(tickersData);
+        async function loadOrganizations() {
+            try {
+                const response = await fetch('./api/organizations.json');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                // Response is already a simple array of organizations
+                organizations = await response.json();
+                console.log(`Loaded ${organizations.length} organizations`);
+            } catch (error) {
+                console.error('Failed to load organizations:', error);
+                // Show error to user
+                const searchInput = document.getElementById('search-input');
+                searchInput.placeholder = 'Error loading data. Please refresh the page.';
+                searchInput.disabled = true;
+            }
+        }
         
         const searchInput = document.getElementById('search-input');
         const searchResults = document.getElementById('search-results');
@@ -128,43 +143,66 @@
             const normalizedQuery = query.toLowerCase();
             
             return items.filter(item => {
-                const ticker = item.ticker.toLowerCase();
                 const title = item.title.toLowerCase();
+                const path = item.path.toLowerCase();
                 
-                // Direct match on ticker or title
-                if (ticker.includes(normalizedQuery) || title.includes(normalizedQuery)) {
+                // Direct match on title
+                if (title.includes(normalizedQuery)) {
                     return true;
                 }
                 
-                // Fuzzy match on ticker (allowing for minor typos)
-                if (ticker.length >= normalizedQuery.length) {
-                    let matchCount = 0;
-                    let queryIndex = 0;
+                // Extract ticker from path for Edgar entries (format: /ticker/SYMBOL)
+                const tickerMatch = path.match(/\/ticker\/([a-z]+)/);
+                if (tickerMatch) {
+                    const ticker = tickerMatch[1];
                     
-                    for (let i = 0; i < ticker.length && queryIndex < normalizedQuery.length; i++) {
-                        if (ticker[i] === normalizedQuery[queryIndex]) {
-                            matchCount++;
-                            queryIndex++;
-                        }
+                    // Direct ticker match
+                    if (ticker.includes(normalizedQuery)) {
+                        return true;
                     }
                     
-                    // Allow match if most characters match
-                    if (matchCount >= Math.ceil(normalizedQuery.length * 0.7)) {
-                        return true;
+                    // Fuzzy match on ticker (allowing for minor typos)
+                    if (ticker.length >= normalizedQuery.length) {
+                        let matchCount = 0;
+                        let queryIndex = 0;
+                        
+                        for (let i = 0; i < ticker.length && queryIndex < normalizedQuery.length; i++) {
+                            if (ticker[i] === normalizedQuery[queryIndex]) {
+                                matchCount++;
+                                queryIndex++;
+                            }
+                        }
+                        
+                        // Allow match if most characters match
+                        if (matchCount >= Math.ceil(normalizedQuery.length * 0.7)) {
+                            return true;
+                        }
                     }
                 }
                 
                 return false;
             }).sort((a, b) => {
-                // Sort by relevance: exact ticker matches first, then title matches
-                const aTickerMatch = a.ticker.toLowerCase().startsWith(normalizedQuery);
-                const bTickerMatch = b.ticker.toLowerCase().startsWith(normalizedQuery);
+                // Sort by relevance: Edgar entries first, then by relevance within type
+                const aIsEdgar = a.path.startsWith('/ticker/');
+                const bIsEdgar = b.path.startsWith('/ticker/');
                 
-                if (aTickerMatch && !bTickerMatch) return -1;
-                if (!aTickerMatch && bTickerMatch) return 1;
+                if (aIsEdgar && !bIsEdgar) return -1;
+                if (!aIsEdgar && bIsEdgar) return 1;
                 
-                // Then by ticker length (shorter tickers first for better UX)
-                return a.ticker.length - b.ticker.length;
+                // For Edgar entries, prioritize ticker matches
+                if (aIsEdgar && bIsEdgar) {
+                    const aTickerMatch = a.path.toLowerCase().includes(`/ticker/${normalizedQuery}`);
+                    const bTickerMatch = b.path.toLowerCase().includes(`/ticker/${normalizedQuery}`);
+                    
+                    if (aTickerMatch && !bTickerMatch) return -1;
+                    if (!aTickerMatch && bTickerMatch) return 1;
+                    
+                    // Then by title length (shorter titles often more relevant)
+                    return a.title.length - b.title.length;
+                }
+                
+                // For IRS entries, sort by title
+                return a.title.localeCompare(b.title);
             }).slice(0, 10); // Limit to 10 results
         }
         
@@ -177,19 +215,30 @@
                 return;
             }
             
-            const results = fuzzySearch(query, tickers);
+            // Check if organizations are loaded
+            if (organizations.length === 0) {
+                searchResults.innerHTML = '<div class="search-result">Loading organizations...</div>';
+                searchResults.style.display = 'block';
+                return;
+            }
+            
+            const results = fuzzySearch(query, organizations);
             
             if (results.length === 0) {
                 searchResults.style.display = 'none';
                 return;
             }
             
-            searchResults.innerHTML = results.map(item => 
-                `<div class="search-result" data-ticker="${item.ticker}">
-                    <div class="ticker">${item.ticker}</div>
-                    <div class="company-title">${item.title}</div>
-                </div>`
-            ).join('');
+            searchResults.innerHTML = results.map(item => {
+                const isNonprofit = item.path.startsWith('/irs-facts/');
+                const displayIdentifier = isNonprofit ? 
+                    item.path.split('/').pop() : // Extract EIN from path
+                    item.path.match(/\/ticker\/([^/]+)/)?.[1] || ''; // Extract ticker from path
+                
+                return `<div class="search-result" data-path="${item.path}">
+                    ${item.title} (${displayIdentifier})
+                </div>`;
+            }).join('');
             
             searchResults.style.display = 'block';
         });
@@ -198,8 +247,8 @@
         searchResults.addEventListener('click', function(e) {
             const result = e.target.closest('.search-result');
             if (result) {
-                const ticker = result.dataset.ticker;
-                window.location.href = `./ticker/${ticker}`;
+                const path = result.dataset.path;
+                window.location.href = `.${path}`;
             }
         });
         
@@ -208,8 +257,8 @@
             if (e.key === 'Enter') {
                 const firstResult = searchResults.querySelector('.search-result');
                 if (firstResult) {
-                    const ticker = firstResult.dataset.ticker;
-                    window.location.href = `/ticker/${ticker}`;
+                    const path = firstResult.dataset.path;
+                    window.location.href = `.${path}`;
                 }
             }
             
@@ -227,8 +276,10 @@
             }
         });
         
-        // Focus on search input when page loads
-        searchInput.focus();
+        // Initialize: load organizations and focus on search input
+        loadOrganizations().then(() => {
+            searchInput.focus();
+        });
     </script>
 </body>
 </html>

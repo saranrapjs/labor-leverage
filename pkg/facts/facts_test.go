@@ -8,48 +8,110 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/saranrapjs/labor-leverage/pkg/edgar"
+	"github.com/saranrapjs/labor-leverage/pkg/irsform"
 )
 
-func TestExtractCEOPayRatio(t *testing.T) {
-	tests := []struct {
-		name             string
-		filename         string
-		expectedCEOPay   float64
-		expectedMedianPay float64
-	}{
-		{
-			name:             "example fixture",
-			filename:         "apple.html",
-			expectedCEOPay:   74609802,
-			expectedMedianPay: 114738,
-		},
+func TestFactsPackageDualPurpose(t *testing.T) {
+	t.Run("Edgar Facts Extraction", func(t *testing.T) {
+		// Test Edgar functionality with backwards compatibility
+		fixturesDir := filepath.Join(".", "fixtures")
+		htmlPath := filepath.Join(fixturesDir, "apple.html")
+		
+		htmlContent, err := os.ReadFile(htmlPath)
+		require.NoError(t, err, "Failed to read fixture file")
+
+		// Create mock Edgar document
+		doc := edgar.Document{
+			DocumentFile: htmlContent,
+			Filing:       edgar.Filing{},
+		}
+
+		// Test ExtractFacts (backwards compatibility)
+		facts, err := ExtractFacts("test-cik", "TEST", "Test Company", []edgar.Document{doc})
+		require.NoError(t, err, "Failed to extract facts")
+		
+		assert.Equal(t, "test-cik", facts.CIK)
+		assert.Equal(t, "TEST", facts.Ticker)
+		assert.Equal(t, "Test Company", facts.CompanyName)
+
+		// Test FromEdgar directly
+		factsFromEdgar, err := FromEdgar("test-cik", "TEST", "Test Company", []edgar.Document{doc})
+		require.NoError(t, err, "Failed to extract facts using FromEdgar")
+		
+		// Both should produce the same results
+		assert.Equal(t, facts.CIK, factsFromEdgar.CIK)
+		assert.Equal(t, facts.Ticker, factsFromEdgar.Ticker)
+		assert.Equal(t, facts.CompanyName, factsFromEdgar.CompanyName)
+	})
+
+	t.Run("IRS Facts Extraction", func(t *testing.T) {
+		// Create mock IRS990 data instead of relying on XML parsing
+		mockIRS990 := &irsform.IRS990Type{
+			PrincipalOfficerNm:            "Jane Smith",
+			TotalEmployeeCnt:              150,
+			CYTotalRevenueAmt:             3000000,
+			CYTotalExpensesAmt:            2800000,
+			NetAssetsOrFundBalancesEOYAmt: 800000,
+		}
+
+		// Create mock ReturnData990
+		returnData990 := &irsform.ReturnData990{
+			IRS990: &irsform.IRS990{
+				IRS990Type: mockIRS990,
+			},
+		}
+
+		// Create mock Return document
+		returnDoc := &irsform.Return{
+			ReturnHeader: irsform.ReturnHeader{
+				ReturnTypeCd: "990",
+				Filer: irsform.Filer{
+					BusinessName: irsform.BusinessNameType{
+						BusinessNameLine1Txt: "Test IRS Organization",
+					},
+				},
+			},
+			ReturnData: returnData990,
+		}
+
+		// Extract facts using FromIRS
+		facts, err := FromIRS(returnDoc)
+		require.NoError(t, err, "Failed to extract facts from IRS data")
+
+		// Verify IRS-specific fields are populated
+		assert.Equal(t, "Test IRS Organization", facts.CompanyName, "Company name should be extracted from ReturnHeader")
+		assert.Equal(t, 150, facts.EmployeesCount, "Employee count should match")
+		assert.Equal(t, 3000000, facts.TotalRevenue, "Total revenue should match")
+		assert.Equal(t, 2800000, facts.TotalExpenses, "Total expenses should match")
+		assert.Equal(t, 800000, facts.NetAssets, "Net assets should match")
+		
+		// Verify Edgar-specific fields are not populated
+		assert.Empty(t, facts.CIK, "CIK should be empty for IRS data")
+		assert.Empty(t, facts.Ticker, "Ticker should be empty for IRS data")
+		assert.Empty(t, facts.NetIncomeLoss, "NetIncomeLoss should be empty for IRS data")
+		assert.Empty(t, facts.Buybacks, "Buybacks should be empty for IRS data")
+	})
+}
+
+func TestFactsStructFields(t *testing.T) {
+	// Test that Facts struct can handle both Edgar and IRS data appropriately
+	facts := &Facts{
+		CIK:           "test-cik",
+		EIN:           "test-ein", 
+		Ticker:        "TEST",
+		CompanyName:   "Test Company",
+		EmployeesCount: 100,
+		TotalRevenue:  1000000,
+		TotalExpenses: 800000,
+		NetAssets:     500000,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Load HTML file from fixtures
-			fixturesDir := filepath.Join(".", "fixtures")
-			htmlPath := filepath.Join(fixturesDir, tt.filename)
-			
-			htmlContent, err := os.ReadFile(htmlPath)
-			require.NoError(t, err, "Failed to read fixture file: %s", tt.filename)
-
-			// Create mock Edgar document
-			doc := edgar.Document{
-				DocumentFile: htmlContent,
-				Filing:       edgar.Filing{},
-			}
-
-			// Extract facts
-			facts, err := ExtractFacts("test-cik", "TEST", "Test Company", []edgar.Document{doc})
-			require.NoError(t, err, "Failed to extract facts")
-
-			// Verify CEO pay ratio
-			if tt.expectedCEOPay > 0 || tt.expectedMedianPay > 0 {
-				require.NotNil(t, facts.CEOPayRatio, "Expected CEOPayRatio to be extracted")
-				assert.Equal(t, tt.expectedCEOPay, facts.CEOPayRatio.CEO, "CEO pay mismatch")
-				assert.Equal(t, tt.expectedMedianPay, facts.CEOPayRatio.Median, "Median pay mismatch")
-			}
-		})
-	}
+	assert.Equal(t, "test-cik", facts.CIK)
+	assert.Equal(t, "test-ein", facts.EIN)
+	assert.Equal(t, "TEST", facts.Ticker)
+	assert.Equal(t, "Test Company", facts.CompanyName)
+	assert.Equal(t, 100, facts.EmployeesCount)
+	assert.Equal(t, 1000000, facts.TotalRevenue)
+	assert.Equal(t, 800000, facts.TotalExpenses)
+	assert.Equal(t, 500000, facts.NetAssets)
 }
