@@ -46,7 +46,8 @@
             border-bottom: 1px solid #eee;
         }
 
-        .search-result:hover {
+        .search-result:hover,
+        .search-result.selected {
             background: #f5f5f5;
         }
 
@@ -112,135 +113,124 @@
     </div>
 
     <script type="module">
-        // Load organization data from JSON endpoint
-        let organizations = [];
-        
-        async function loadOrganizations() {
-            try {
-                const response = await fetch('./api/organizations.json');
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                // Response is already a simple array of organizations
-                organizations = await response.json();
-                console.log(`Loaded ${organizations.length} organizations`);
-            } catch (error) {
-                console.error('Failed to load organizations:', error);
-                // Show error to user
-                const searchInput = document.getElementById('search-input');
-                searchInput.placeholder = 'Error loading data. Please refresh the page.';
-                searchInput.disabled = true;
-            }
-        }
-        
         const searchInput = document.getElementById('search-input');
         const searchResults = document.getElementById('search-results');
         
-        // Fuzzy search function
-        function fuzzySearch(query, items) {
-            if (!query.trim()) return [];
-            
-            const normalizedQuery = query.toLowerCase();
-            
-            return items.filter(item => {
-                const title = item.title.toLowerCase();
-                const path = item.path.toLowerCase();
-                
-                // Direct match on title
-                if (title.includes(normalizedQuery)) {
-                    return true;
-                }
-                
-                // Extract ticker from path for Edgar entries (format: /ticker/SYMBOL)
-                const tickerMatch = path.match(/\/ticker\/([a-z]+)/);
-                if (tickerMatch) {
-                    const ticker = tickerMatch[1];
-                    
-                    // Direct ticker match
-                    if (ticker.includes(normalizedQuery)) {
-                        return true;
-                    }
-                    
-                    // Fuzzy match on ticker (allowing for minor typos)
-                    if (ticker.length >= normalizedQuery.length) {
-                        let matchCount = 0;
-                        let queryIndex = 0;
-                        
-                        for (let i = 0; i < ticker.length && queryIndex < normalizedQuery.length; i++) {
-                            if (ticker[i] === normalizedQuery[queryIndex]) {
-                                matchCount++;
-                                queryIndex++;
-                            }
-                        }
-                        
-                        // Allow match if most characters match
-                        if (matchCount >= Math.ceil(normalizedQuery.length * 0.7)) {
-                            return true;
-                        }
-                    }
-                }
-                
-                return false;
-            }).sort((a, b) => {
-                // Sort by relevance: Edgar entries first, then by relevance within type
-                const aIsEdgar = a.path.startsWith('/ticker/');
-                const bIsEdgar = b.path.startsWith('/ticker/');
-                
-                if (aIsEdgar && !bIsEdgar) return -1;
-                if (!aIsEdgar && bIsEdgar) return 1;
-                
-                // For Edgar entries, prioritize ticker matches
-                if (aIsEdgar && bIsEdgar) {
-                    const aTickerMatch = a.path.toLowerCase().includes(`/ticker/${normalizedQuery}`);
-                    const bTickerMatch = b.path.toLowerCase().includes(`/ticker/${normalizedQuery}`);
-                    
-                    if (aTickerMatch && !bTickerMatch) return -1;
-                    if (!aTickerMatch && bTickerMatch) return 1;
-                    
-                    // Then by title length (shorter titles often more relevant)
-                    return a.title.length - b.title.length;
-                }
-                
-                // For IRS entries, sort by title
-                return a.title.localeCompare(b.title);
-            }).slice(0, 10); // Limit to 10 results
-        }
+        // AbortController to cancel previous requests
+        let currentAbortController = null;
+        let searchTimeout = null;
+        let selectedIndex = -1; // Track which result is selected with keyboard
         
-        // Handle search input
-        searchInput.addEventListener('input', function() {
-            const query = this.value;
-            
+        // Debounced search function using the new API
+        async function performSearch(query) {
             if (!query.trim()) {
                 searchResults.style.display = 'none';
                 return;
             }
             
-            // Check if organizations are loaded
-            if (organizations.length === 0) {
-                searchResults.innerHTML = '<div class="search-result">Loading organizations...</div>';
-                searchResults.style.display = 'block';
-                return;
+            // Cancel any previous request
+            if (currentAbortController) {
+                currentAbortController.abort();
             }
             
-            const results = fuzzySearch(query, organizations);
+            // Create new AbortController for this request
+            currentAbortController = new AbortController();
             
-            if (results.length === 0) {
-                searchResults.style.display = 'none';
-                return;
-            }
-            
-            searchResults.innerHTML = results.map(item => {
-                const isNonprofit = item.path.startsWith('/irs-facts/');
-                const displayIdentifier = isNonprofit ? 
-                    item.path.split('/').pop() : // Extract EIN from path
-                    item.path.match(/\/ticker\/([^/]+)/)?.[1] || ''; // Extract ticker from path
+            try {
+                const url = new URL('./api/search', window.location.origin);
+                url.searchParams.set('q', query);
+                url.searchParams.set('limit', '10');
                 
-                return `<div class="search-result" data-path="${item.path}">
-                    ${item.title} (${displayIdentifier})
-                </div>`;
-            }).join('');
+                const response = await fetch(url, {
+                    signal: currentAbortController.signal
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const results = await response.json();
+                
+                // Check if this request was aborted
+                if (currentAbortController.signal.aborted) {
+                    return;
+                }
+                
+                if (!results || results.length === 0) {
+                    searchResults.style.display = 'none';
+                    return;
+                }
+                
+                searchResults.innerHTML = results.map(item => {
+                    const isNonprofit = item.path.startsWith('/irs-facts/');
+                    const displayIdentifier = isNonprofit ? 
+                        item.path.split('/').pop() : // Extract EIN from path
+                        item.path.match(/\/ticker\/([^/]+)/)?.[1] || ''; // Extract ticker from path
+                    
+                    return `<div class="search-result" data-path="${item.path}">
+                        ${item.title} (${displayIdentifier})
+                    </div>`;
+                }).join('');
+                
+                // Reset selection when new results are displayed
+                selectedIndex = -1;
+                updateSelection();
+                
+                searchResults.style.display = 'block';
+                
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    // Request was cancelled, this is normal
+                    return;
+                }
+                console.error('Search request failed:', error);
+                searchResults.innerHTML = '<div class="search-result">Search failed. Please try again.</div>';
+                searchResults.style.display = 'block';
+            }
+        }
+        
+        // Update visual selection state
+        function updateSelection() {
+            const results = searchResults.querySelectorAll('.search-result[data-path]');
+            results.forEach((result, index) => {
+                result.classList.toggle('selected', index === selectedIndex);
+            });
+        }
+        
+        // Navigate to selected result
+        function navigateToSelected() {
+            const results = searchResults.querySelectorAll('.search-result[data-path]');
+            if (selectedIndex >= 0 && selectedIndex < results.length) {
+                const path = results[selectedIndex].dataset.path;
+                if (path) {
+                    window.location.href = `.${path}`;
+                }
+            }
+        }
+        
+        // Handle search input with debouncing
+        searchInput.addEventListener('input', function() {
+            const query = this.value;
             
+            // Clear any existing timeout
+            if (searchTimeout) {
+                clearTimeout(searchTimeout);
+            }
+            
+            if (!query.trim()) {
+                searchResults.style.display = 'none';
+                selectedIndex = -1;
+                return;
+            }
+            
+            // Show loading state immediately for better UX
+            searchResults.innerHTML = '<div class="search-result">Searching...</div>';
             searchResults.style.display = 'block';
+            
+            // Debounce the search by 300ms
+            searchTimeout = setTimeout(() => {
+                performSearch(query);
+            }, 300);
         });
         
         // Handle result selection
@@ -248,24 +238,55 @@
             const result = e.target.closest('.search-result');
             if (result) {
                 const path = result.dataset.path;
-                window.location.href = `.${path}`;
-            }
-        });
-        
-        // Handle Enter key
-        searchInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                const firstResult = searchResults.querySelector('.search-result');
-                if (firstResult) {
-                    const path = firstResult.dataset.path;
+                if (path) {
                     window.location.href = `.${path}`;
                 }
             }
+        });
+        
+        // Handle keyboard navigation
+        searchInput.addEventListener('keydown', function(e) {
+            const results = searchResults.querySelectorAll('.search-result[data-path]');
+            const isDropdownVisible = searchResults.style.display === 'block' && results.length > 0;
             
-            // Handle escape key to close results
-            if (e.key === 'Escape') {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (isDropdownVisible) {
+                    selectedIndex = Math.min(selectedIndex + 1, results.length - 1);
+                    updateSelection();
+                }
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (isDropdownVisible) {
+                    selectedIndex = Math.max(selectedIndex - 1, -1);
+                    updateSelection();
+                }
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (isDropdownVisible) {
+                    if (selectedIndex >= 0) {
+                        // Navigate to selected result
+                        navigateToSelected();
+                    } else {
+                        // Navigate to first result if none selected
+                        const firstResult = results[0];
+                        if (firstResult) {
+                            const path = firstResult.dataset.path;
+                            window.location.href = `.${path}`;
+                        }
+                    }
+                }
+            } else if (e.key === 'Escape') {
                 searchResults.style.display = 'none';
+                selectedIndex = -1;
                 this.blur();
+                // Cancel any pending search
+                if (currentAbortController) {
+                    currentAbortController.abort();
+                }
+                if (searchTimeout) {
+                    clearTimeout(searchTimeout);
+                }
             }
         });
         
@@ -273,13 +294,12 @@
         document.addEventListener('click', function(e) {
             if (!e.target.closest('.search-container')) {
                 searchResults.style.display = 'none';
+                selectedIndex = -1;
             }
         });
         
-        // Initialize: load organizations and focus on search input
-        loadOrganizations().then(() => {
-            searchInput.focus();
-        });
+        // Focus on search input when page loads
+        searchInput.focus();
     </script>
 </body>
 </html>

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -250,6 +251,156 @@ func (s *Server) handleOrganizationsJSON(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// handleSearchAPI handles GET /api/search?q={query}&limit={limit} to return filtered organization data
+func (s *Server) handleSearchAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]OrganizationItem{})
+		return
+	}
+	
+	limitStr := r.URL.Query().Get("limit")
+	limit := 10 // default limit
+	if limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 && parsedLimit <= 50 {
+			limit = parsedLimit
+		}
+	}
+	
+	var allOrganizations []OrganizationItem
+	
+	// Add Edgar data
+	for _, ticker := range edgar.TickersData {
+		allOrganizations = append(allOrganizations, OrganizationItem{
+			Title: ticker.Title,
+			Path:  fmt.Sprintf("/ticker/%s", ticker.Ticker),
+		})
+	}
+	
+	eins := map[string]bool{}
+	// Add IRS data
+	for _, nonprofit := range s.irsClient.NonProfits {
+		if _, seen := eins[nonprofit.EIN]; seen {
+			continue
+		}
+		eins[nonprofit.EIN] = true
+		allOrganizations = append(allOrganizations, OrganizationItem{
+			Title: nonprofit.Name,
+			Path:  fmt.Sprintf("/irs-facts/%s", nonprofit.EIN),
+		})
+	}
+	
+	// Filter organizations based on query
+	filteredOrganizations := s.fuzzySearch(query, allOrganizations, limit)
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=300") // Cache for 5 minutes
+	if err := json.NewEncoder(w).Encode(filteredOrganizations); err != nil {
+		http.Error(w, "Failed to encode JSON", http.StatusInternalServerError)
+		return
+	}
+}
+
+// fuzzySearch implements the same search logic as the frontend JavaScript
+func (s *Server) fuzzySearch(query string, items []OrganizationItem, limit int) []OrganizationItem {
+	if query == "" {
+		return []OrganizationItem{}
+	}
+	
+	normalizedQuery := strings.ToLower(query)
+	var results []OrganizationItem
+	
+	for _, item := range items {
+		title := strings.ToLower(item.Title)
+		path := strings.ToLower(item.Path)
+		
+		// Direct match on title
+		if strings.Contains(title, normalizedQuery) {
+			results = append(results, item)
+			continue
+		}
+		
+		// Extract ticker from path for Edgar entries (format: /ticker/SYMBOL)
+		if strings.HasPrefix(path, "/ticker/") {
+			ticker := strings.TrimPrefix(path, "/ticker/")
+			
+			// Direct ticker match
+			if strings.Contains(ticker, normalizedQuery) {
+				results = append(results, item)
+				continue
+			}
+			
+			// Fuzzy match on ticker (allowing for minor typos)
+			if len(ticker) >= len(normalizedQuery) {
+				matchCount := 0
+				queryIndex := 0
+				
+				for i := 0; i < len(ticker) && queryIndex < len(normalizedQuery); i++ {
+					if ticker[i] == normalizedQuery[queryIndex] {
+						matchCount++
+						queryIndex++
+					}
+				}
+				
+				// Allow match if most characters match
+				if float64(matchCount) >= float64(len(normalizedQuery))*0.7 {
+					results = append(results, item)
+				}
+			}
+		}
+	}
+	
+	// Sort results by relevance
+	s.sortSearchResults(results, normalizedQuery)
+	
+	// Limit results
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	
+	return results
+}
+
+// sortSearchResults sorts results by relevance similar to the frontend logic
+func (s *Server) sortSearchResults(results []OrganizationItem, normalizedQuery string) {
+	// Simple sort: Edgar entries first, then by relevance within type
+	for i := 0; i < len(results)-1; i++ {
+		for j := i + 1; j < len(results); j++ {
+			aIsEdgar := strings.HasPrefix(results[i].Path, "/ticker/")
+			bIsEdgar := strings.HasPrefix(results[j].Path, "/ticker/")
+			
+			if !aIsEdgar && bIsEdgar {
+				// Swap: Edgar entries should come first
+				results[i], results[j] = results[j], results[i]
+			} else if aIsEdgar && bIsEdgar {
+				// Both are Edgar, prioritize ticker matches
+				aTickerMatch := strings.Contains(strings.ToLower(results[i].Path), "/ticker/"+normalizedQuery)
+				bTickerMatch := strings.Contains(strings.ToLower(results[j].Path), "/ticker/"+normalizedQuery)
+				
+				if !aTickerMatch && bTickerMatch {
+					results[i], results[j] = results[j], results[i]
+				} else if aTickerMatch == bTickerMatch {
+					// Sort by title length (shorter titles often more relevant)
+					if len(results[i].Title) > len(results[j].Title) {
+						results[i], results[j] = results[j], results[i]
+					}
+				}
+			} else if !aIsEdgar && !bIsEdgar {
+				// Both are IRS entries, sort by title
+				if strings.Compare(results[i].Title, results[j].Title) > 0 {
+					results[i], results[j] = results[j], results[i]
+				}
+			}
+		}
+	}
+}
+
 func (s *Server) handleFilings(w http.ResponseWriter, r *http.Request) {
 	ticker := strings.ToUpper(r.PathValue("ticker"))
 	cik := strings.ToUpper(r.PathValue("cik"))
@@ -478,6 +629,7 @@ func main() {
 	mux.HandleFunc("GET /irs/{ein}", server.handleIRSCompany)
 	mux.HandleFunc("GET /irs-facts/{ein}", server.handleIRSFacts)
 	mux.HandleFunc("GET /api/organizations.json", server.handleOrganizationsJSON)
+	mux.HandleFunc("GET /api/search", server.handleSearchAPI)
 	mux.HandleFunc("GET /all", server.handleAll)
 	mux.HandleFunc("GET /health", server.handleHealth)
 	mux.HandleFunc("GET /styles.css", server.handleStyles)
