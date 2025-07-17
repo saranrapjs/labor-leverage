@@ -162,7 +162,7 @@
                 }
                 
                 searchResults.innerHTML = results.map(item => {
-                    const isNonprofit = item.path.startsWith('/irs-facts/');
+                    const isNonprofit = item.path.startsWith('/ein/');
                     const displayIdentifier = isNonprofit ? 
                         item.path.split('/').pop() : // Extract EIN from path
                         item.path.match(/\/ticker\/([^/]+)/)?.[1] || ''; // Extract ticker from path

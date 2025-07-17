@@ -68,26 +68,41 @@ func (db *DB) createTables() error {
 		return fmt.Errorf("failed to create filings table: %w", err)
 	}
 
-	// Create facts table
+	// Create facts table with generic ID support
 	factsSQL := `
 		CREATE TABLE IF NOT EXISTS facts (
-			cik TEXT PRIMARY KEY,
-			ticker TEXT NOT NULL,
+			id TEXT PRIMARY KEY,
+			source_type TEXT NOT NULL,
 			data BLOB NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			company_name TEXT DEFAULT ''
 		);
 	`
 	if _, err := db.conn.Exec(factsSQL); err != nil {
 		return fmt.Errorf("failed to create facts table: %w", err)
 	}
 
-	// Add company_name column if it doesn't exist (migration)
-	addColumnSQL := `
-		ALTER TABLE facts ADD COLUMN company_name TEXT DEFAULT '';
+	// Create index on source_type for efficient queries
+	indexSQL := `CREATE INDEX IF NOT EXISTS idx_facts_source_type ON facts(source_type);`
+	if _, err := db.conn.Exec(indexSQL); err != nil {
+		return fmt.Errorf("failed to create source_type index: %w", err)
+	}
+
+	// Create IRS returns table
+	irsReturnsSQL := `
+		CREATE TABLE IF NOT EXISTS irs_returns (
+			ein TEXT PRIMARY KEY,
+			return_type TEXT NOT NULL,
+			tax_year TEXT NOT NULL,
+			xml_data BLOB NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
 	`
-	// Ignore error if column already exists
-	db.conn.Exec(addColumnSQL)
+	if _, err := db.conn.Exec(irsReturnsSQL); err != nil {
+		return fmt.Errorf("failed to create irs_returns table: %w", err)
+	}
 
 	return nil
 }
@@ -242,12 +257,24 @@ func (db *DB) StoreFacts(f *facts.Facts) error {
 		return fmt.Errorf("failed to marshal facts: %w", err)
 	}
 
+	// Determine ID and source type
+	var id, sourceType string
+	if f.CIK != "" {
+		id = f.CIK
+		sourceType = "SEC"
+	} else if f.EIN != "" {
+		id = f.EIN
+		sourceType = "IRS"
+	} else {
+		return fmt.Errorf("facts must have either CIK or EIN")
+	}
+
 	// Insert or replace the facts data
 	query := `
-		INSERT OR REPLACE INTO facts (cik, ticker, company_name, data, updated_at) 
+		INSERT OR REPLACE INTO facts (id, source_type, company_name, data, updated_at) 
 		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
 	`
-	_, err = db.conn.Exec(query, f.CIK, f.Ticker, f.CompanyName, data)
+	_, err = db.conn.Exec(query, id, sourceType, f.CompanyName, data)
 	if err != nil {
 		return fmt.Errorf("failed to store facts: %w", err)
 	}
@@ -255,15 +282,15 @@ func (db *DB) StoreFacts(f *facts.Facts) error {
 	return nil
 }
 
-// GetFacts retrieves Facts data from the database
-func (db *DB) GetFacts(cik string) (*facts.Facts, error) {
-	query := "SELECT data FROM facts WHERE cik = ?"
+// GetFacts retrieves Facts data from the database by ID (CIK or EIN)
+func (db *DB) GetFacts(id string) (*facts.Facts, error) {
+	query := "SELECT data FROM facts WHERE id = ?"
 	
 	var data []byte
-	err := db.conn.QueryRow(query, cik).Scan(&data)
+	err := db.conn.QueryRow(query, id).Scan(&data)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("facts not found for CIK %s", cik)
+			return nil, fmt.Errorf("facts not found for ID %s", id)
 		}
 		return nil, fmt.Errorf("failed to query facts: %w", err)
 	}
@@ -276,12 +303,12 @@ func (db *DB) GetFacts(cik string) (*facts.Facts, error) {
 	return &f, nil
 }
 
-// AreFactsStale checks if facts for a given CIK are older than the specified duration
-func (db *DB) AreFactsStale(cik string, maxAge time.Duration) (bool, error) {
-	query := "SELECT updated_at FROM facts WHERE cik = ?"
+// AreFactsStale checks if facts for a given ID (CIK or EIN) are older than the specified duration
+func (db *DB) AreFactsStale(id string, maxAge time.Duration) (bool, error) {
+	query := "SELECT updated_at FROM facts WHERE id = ?"
 	
 	var updatedAt string
-	err := db.conn.QueryRow(query, cik).Scan(&updatedAt)
+	err := db.conn.QueryRow(query, id).Scan(&updatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return true, nil // No facts exist, consider stale
@@ -299,9 +326,9 @@ func (db *DB) AreFactsStale(cik string, maxAge time.Duration) (bool, error) {
 	return time.Since(timestamp) > maxAge, nil
 }
 
-// ListFactsCIKs returns all CIKs that have facts stored
+// ListFactsCIKs returns all CIKs that have facts stored (SEC data only)
 func (db *DB) ListFactsCIKs() ([]string, error) {
-	query := `SELECT cik FROM facts ORDER BY ticker`
+	query := `SELECT id FROM facts WHERE source_type = 'SEC' ORDER BY company_name`
 	
 	rows, err := db.conn.Query(query)
 	if err != nil {
@@ -318,4 +345,99 @@ func (db *DB) ListFactsCIKs() ([]string, error) {
 		ciks = append(ciks, cik)
 	}
 	return ciks, nil
+}
+
+// ListFactsEINs returns all EINs that have facts stored (IRS data only)
+func (db *DB) ListFactsEINs() ([]string, error) {
+	query := `SELECT id FROM facts WHERE source_type = 'IRS' ORDER BY company_name`
+	
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query facts: %w", err)
+	}
+	defer rows.Close()
+
+	var eins []string
+	for rows.Next() {
+		var ein string
+		if err := rows.Scan(&ein); err != nil {
+			return nil, fmt.Errorf("failed to scan facts row: %w", err)
+		}
+		eins = append(eins, ein)
+	}
+	return eins, nil
+}
+
+// StoreIRSReturn stores raw IRS XML return data in the database
+func (db *DB) StoreIRSReturn(ein, returnType, taxYear string, xmlData []byte) error {
+	query := `
+		INSERT OR REPLACE INTO irs_returns (ein, return_type, tax_year, xml_data, updated_at) 
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`
+	_, err := db.conn.Exec(query, ein, returnType, taxYear, xmlData)
+	if err != nil {
+		return fmt.Errorf("failed to store IRS return: %w", err)
+	}
+
+	return nil
+}
+
+// GetIRSReturn retrieves raw IRS XML return data from the database
+func (db *DB) GetIRSReturn(ein string) ([]byte, error) {
+	query := "SELECT xml_data FROM irs_returns WHERE ein = ?"
+	
+	var xmlData []byte
+	err := db.conn.QueryRow(query, ein).Scan(&xmlData)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("IRS return not found for EIN %s", ein)
+		}
+		return nil, fmt.Errorf("failed to query IRS return: %w", err)
+	}
+
+	return xmlData, nil
+}
+
+// AreIRSReturnsStale checks if IRS return data for a given EIN is older than the specified duration
+func (db *DB) AreIRSReturnsStale(ein string, maxAge time.Duration) (bool, error) {
+	query := "SELECT updated_at FROM irs_returns WHERE ein = ?"
+	
+	var updatedAt string
+	err := db.conn.QueryRow(query, ein).Scan(&updatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return true, nil // No data exists, consider stale
+		}
+		return false, fmt.Errorf("failed to query IRS return timestamp: %w", err)
+	}
+
+	// Parse the timestamp (SQLite CURRENT_TIMESTAMP returns RFC3339 format)
+	timestamp, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse timestamp: %w", err)
+	}
+
+	// Check if data is older than maxAge
+	return time.Since(timestamp) > maxAge, nil
+}
+
+// ListIRSReturnEINs returns all EINs that have IRS return data stored
+func (db *DB) ListIRSReturnEINs() ([]string, error) {
+	query := `SELECT ein FROM irs_returns ORDER BY ein`
+	
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query IRS returns: %w", err)
+	}
+	defer rows.Close()
+
+	var eins []string
+	for rows.Next() {
+		var ein string
+		if err := rows.Scan(&ein); err != nil {
+			return nil, fmt.Errorf("failed to scan IRS return row: %w", err)
+		}
+		eins = append(eins, ein)
+	}
+	return eins, nil
 }

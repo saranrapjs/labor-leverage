@@ -139,24 +139,6 @@ func NewServer(database *db.DB) *Server {
 }
 
 
-
-func (s *Server) handleAll(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Get CIKs with facts from database
-	ciks, err := s.db.ListFactsCIKs()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get CIKs: %v", err), http.StatusInternalServerError)
-		return
-	}
-	for _, cik := range ciks {
-		w.Write([]byte(cik + "\n"))
-	}
-}
-
 // handleFilings handles GET /api/ticker/{ticker}
 func (s *Server) handleTicker(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -239,7 +221,7 @@ func (s *Server) handleOrganizationsJSON(w http.ResponseWriter, r *http.Request)
 		eins[nonprofit.EIN] = true
 		organizations = append(organizations, OrganizationItem{
 			Title: nonprofit.Name,
-			Path:  fmt.Sprintf("/irs-facts/%s", nonprofit.EIN),
+			Path:  fmt.Sprintf("/ein/%s", nonprofit.EIN),
 		})
 	}
 	
@@ -292,7 +274,7 @@ func (s *Server) handleSearchAPI(w http.ResponseWriter, r *http.Request) {
 		eins[nonprofit.EIN] = true
 		allOrganizations = append(allOrganizations, OrganizationItem{
 			Title: nonprofit.Name,
-			Path:  fmt.Sprintf("/irs-facts/%s", nonprofit.EIN),
+			Path:  fmt.Sprintf("/ein/%s", nonprofit.EIN),
 		})
 	}
 	
@@ -519,7 +501,7 @@ func (s *Server) handleStyles(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(stylesCSS))
 }
 
-// handleIRSCompany handles GET /irs/{ein} to fetch company XML data from IRS
+// handleIRSCompany handles GET /irs/{ein} to fetch company XML data from IRS with caching
 func (s *Server) handleIRSCompany(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -534,32 +516,61 @@ func (s *Server) handleIRSCompany(w http.ResponseWriter, r *http.Request) {
 	
 	log.Printf("Fetching IRS data for EIN: %s", ein)
 	
-	// Find the nonprofit to get the return type
-	var returnType string
-	for _, np := range s.irsClient.NonProfits {
-		if strings.EqualFold(np.EIN, ein) && irsform.IsSupportedReturnType(np.ReturnType) {
-			returnType = np.ReturnType
-			break
+	var xmlData []byte
+	var err error
+	
+	// Check if we have cached XML data
+	staleXML, err := s.db.AreIRSReturnsStale(ein, cacheMaxAge)
+	if err != nil {
+		log.Printf("Error checking IRS return staleness for EIN %s: %v", ein, err)
+		staleXML = true // Assume stale on error
+	}
+	
+	if !staleXML {
+		// Get XML from database (it's fresh)
+		xmlData, err = s.db.GetIRSReturn(ein)
+		if err != nil {
+			log.Printf("Error retrieving IRS return from database for EIN %s: %v", ein, err)
+			staleXML = true // Force network fetch on database error
 		}
 	}
 	
-	if returnType == "" {
-		http.Error(w, fmt.Sprintf("EIN %s not found or unsupported return type", ein), http.StatusNotFound)
-		return
-	}
-	
-	xmlString, err := s.irsClient.FetchCompany(ein)
-	if err != nil {
-		log.Printf("Failed to fetch company data for EIN %s: %v", ein, err)
-		http.Error(w, fmt.Sprintf("Failed to fetch company data: %v", err), http.StatusInternalServerError)
-		return
+	if staleXML {
+		// Find the nonprofit to get the return type
+		var returnType string
+		for _, np := range s.irsClient.NonProfits {
+			if strings.EqualFold(np.EIN, ein) && irsform.IsSupportedReturnType(np.ReturnType) {
+				returnType = np.ReturnType
+				break
+			}
+		}
+		
+		if returnType == "" {
+			http.Error(w, fmt.Sprintf("EIN %s not found or unsupported return type", ein), http.StatusNotFound)
+			return
+		}
+		
+		// XML data is stale or doesn't exist, fetch from network
+		log.Printf("IRS return for EIN %s is stale or missing, fetching from network", ein)
+		xmlData, err = s.irsClient.FetchCompany(ein)
+		if err != nil {
+			log.Printf("Failed to fetch company data for EIN %s: %v", ein, err)
+			http.Error(w, fmt.Sprintf("Failed to fetch company data: %v", err), http.StatusInternalServerError)
+			return
+		}
+		
+		// Store the XML data in database
+		if err := s.db.StoreIRSReturn(ein, returnType, "2024", xmlData); err != nil {
+			log.Printf("Warning: Failed to store IRS return in database for EIN %s: %v", ein, err)
+			// Continue serving even if storage fails
+		}
 	}
 	
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	w.Write([]byte(xmlString))
+	w.Write(xmlData)
 }
 
-// handleIRSFacts handles GET /irs-facts/{ein} to extract Facts from IRS return data
+// handleIRSFacts handles GET /ein/{ein} to extract Facts from IRS return data with lazy loading
 func (s *Server) handleIRSFacts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -572,36 +583,43 @@ func (s *Server) handleIRSFacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	log.Printf("Extracting Facts from IRS data for EIN: %s", ein)
-	
-	// Fetch the XML data
-	xmlData, err := s.irsClient.FetchCompany(ein)
+	w.Header().Set("x-ein", ein)
+
+	var factData *facts.Facts
+	var err error
+
+	// Check if facts exist in database and if they're fresh
+	stale, err := s.db.AreFactsStale(ein, cacheMaxAge)
 	if err != nil {
-		log.Printf("Failed to fetch company data for EIN %s: %v", ein, err)
-		http.Error(w, fmt.Sprintf("Failed to fetch company data: %v", err), http.StatusInternalServerError)
-		return
+		log.Printf("Error checking facts staleness for EIN %s: %v", ein, err)
+		stale = true // Assume stale on error
 	}
-	
-	// Parse the XML data
-	reader := strings.NewReader(string(xmlData))
-	returnData, err := irsform.Parse(reader)
-	if err != nil {
-		log.Printf("Failed to parse XML data for EIN %s: %v", ein, err)
-		http.Error(w, fmt.Sprintf("Failed to parse XML data: %v", err), http.StatusInternalServerError)
-		return
+
+	if !stale {
+		// Get facts from database (they're fresh)
+		factData, err = s.db.GetFacts(ein)
+		if err != nil {
+			log.Printf("Error retrieving facts from database for EIN %s: %v", ein, err)
+			stale = true // Force network fetch on database error
+		}
 	}
-	
-	// Extract facts using FromIRS (now handles all supported return types)
-	factData, err := facts.FromIRS(returnData)
-	if err != nil {
-		log.Printf("Failed to extract facts from IRS data for EIN %s: %v", ein, err)
-		http.Error(w, fmt.Sprintf("Failed to extract facts: %v", err), http.StatusInternalServerError)
-		return
+
+	if stale {
+		// Facts are stale or don't exist, fetch from network
+		log.Printf("Facts for EIN %s are stale or missing, fetching from network", ein)
+		factData, err = s.downloadAndProcessIRSFacts(r.Context(), ein)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to process facts: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Store the freshly fetched facts in database
+		if err := s.db.StoreFacts(factData); err != nil {
+			log.Printf("Warning: Failed to store facts in database for EIN %s: %v", ein, err)
+			// Continue serving even if storage fails
+		}
 	}
-	
-	// Set the EIN in the facts data
-	factData.EIN = ein
-	
+
 	// Return facts as HTML using the same template as ticker endpoint
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tpl.Execute(w, factData); err != nil {
@@ -609,6 +627,75 @@ func (s *Server) handleIRSFacts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+}
+
+// downloadAndProcessIRSFacts downloads and processes IRS data from the network
+func (s *Server) downloadAndProcessIRSFacts(ctx context.Context, ein string) (*facts.Facts, error) {
+	log.Printf("Downloading IRS data for EIN %s...", ein)
+	
+	var xmlData []byte
+	var err error
+	
+	// Check if we have cached XML data
+	staleXML, err := s.db.AreIRSReturnsStale(ein, cacheMaxAge)
+	if err != nil {
+		log.Printf("Error checking IRS return staleness for EIN %s: %v", ein, err)
+		staleXML = true // Assume stale on error
+	}
+	
+	if !staleXML {
+		// Get XML from database (it's fresh)
+		xmlData, err = s.db.GetIRSReturn(ein)
+		if err != nil {
+			log.Printf("Error retrieving IRS return from database for EIN %s: %v", ein, err)
+			staleXML = true // Force network fetch on database error
+		}
+	}
+	
+	if staleXML {
+		// XML data is stale or doesn't exist, fetch from network
+		log.Printf("IRS return for EIN %s is stale or missing, fetching from network", ein)
+		xmlData, err = s.irsClient.FetchCompany(ein)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch company data: %w", err)
+		}
+		
+		// Find the nonprofit to get the return type and tax year
+		var returnType, taxYear string
+		for _, np := range s.irsClient.NonProfits {
+			if strings.EqualFold(np.EIN, ein) {
+				returnType = np.ReturnType
+				taxYear = "2024" // Current year from IRS client
+				break
+			}
+		}
+		
+		// Store the XML data in database
+		if returnType != "" {
+			if err := s.db.StoreIRSReturn(ein, returnType, taxYear, xmlData); err != nil {
+				log.Printf("Warning: Failed to store IRS return in database for EIN %s: %v", ein, err)
+				// Continue processing even if storage fails
+			}
+		}
+	}
+	
+	// Parse the XML data
+	reader := strings.NewReader(string(xmlData))
+	returnData, err := irsform.Parse(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse XML data: %w", err)
+	}
+	
+	// Extract facts using FromIRS (now handles all supported return types)
+	factData, err := facts.FromIRS(returnData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract facts from IRS data: %w", err)
+	}
+	
+	// Set the EIN in the facts data
+	factData.EIN = ein
+	
+	return factData, nil
 }
 
 func main() {
@@ -627,10 +714,9 @@ func main() {
 	mux.HandleFunc("GET /cik/{cik}", server.handleCik)
 	mux.HandleFunc("GET /ticker/{ticker}", server.handleTicker)
 	mux.HandleFunc("GET /irs/{ein}", server.handleIRSCompany)
-	mux.HandleFunc("GET /irs-facts/{ein}", server.handleIRSFacts)
+	mux.HandleFunc("GET /ein/{ein}", server.handleIRSFacts)
 	mux.HandleFunc("GET /api/organizations.json", server.handleOrganizationsJSON)
 	mux.HandleFunc("GET /api/search", server.handleSearchAPI)
-	mux.HandleFunc("GET /all", server.handleAll)
 	mux.HandleFunc("GET /health", server.handleHealth)
 	mux.HandleFunc("GET /styles.css", server.handleStyles)
 	mux.HandleFunc("GET /", server.handleIndex)
