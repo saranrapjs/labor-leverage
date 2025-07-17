@@ -104,6 +104,20 @@ func (db *DB) createTables() error {
 		return fmt.Errorf("failed to create irs_returns table: %w", err)
 	}
 
+	// Create search cache table using FTS for efficient searching
+	searchCacheSQL := `
+		CREATE VIRTUAL TABLE IF NOT EXISTS search_cache USING fts5(
+			title,
+			path,
+			source_type,
+			created_at UNINDEXED,
+			updated_at UNINDEXED
+		);
+	`
+	if _, err := db.conn.Exec(searchCacheSQL); err != nil {
+		return fmt.Errorf("failed to create search_cache table: %w", err)
+	}
+
 	return nil
 }
 
@@ -440,4 +454,137 @@ func (db *DB) ListIRSReturnEINs() ([]string, error) {
 		eins = append(eins, ein)
 	}
 	return eins, nil
+}
+
+// SearchCacheItem represents a single search cache entry
+type SearchCacheItem struct {
+	Title      string
+	Path       string
+	SourceType string
+}
+
+// StoreSearchCacheItem stores a single search cache item
+func (db *DB) StoreSearchCacheItem(title, path, sourceType string) error {
+	query := `
+		INSERT OR REPLACE INTO search_cache (title, path, source_type, updated_at) 
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+	`
+	_, err := db.conn.Exec(query, title, path, sourceType)
+	if err != nil {
+		return fmt.Errorf("failed to store search cache item: %w", err)
+	}
+	return nil
+}
+
+// StoreSearchCacheItems stores multiple search cache items in batches
+func (db *DB) StoreSearchCacheItems(items []SearchCacheItem) error {
+	const batchSize = 1000
+	
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		
+		batch := items[i:end]
+		if err := db.storeSearchCacheBatch(batch); err != nil {
+			return fmt.Errorf("failed to store search cache batch: %w", err)
+		}
+	}
+	
+	return nil
+}
+
+// storeSearchCacheBatch stores a batch of search cache items in a single transaction
+func (db *DB) storeSearchCacheBatch(items []SearchCacheItem) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	
+	stmt, err := tx.Prepare(`
+		INSERT OR REPLACE INTO search_cache (title, path, source_type, updated_at) 
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+	
+	for _, item := range items {
+		if _, err := stmt.Exec(item.Title, item.Path, item.SourceType); err != nil {
+			return fmt.Errorf("failed to execute statement: %w", err)
+		}
+	}
+	
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	
+	return nil
+}
+
+// ClearSearchCache clears all search cache entries
+func (db *DB) ClearSearchCache() error {
+	query := "DELETE FROM search_cache"
+	_, err := db.conn.Exec(query)
+	if err != nil {
+		return fmt.Errorf("failed to clear search cache: %w", err)
+	}
+	return nil
+}
+
+// SearchCache performs FTS search on cached organizations
+func (db *DB) SearchCache(query string, limit int) ([]struct {
+	Title      string
+	Path       string
+	SourceType string
+}, error) {
+	// Use FTS5 prefix query with *
+	prefixQuery := query + "*"
+	sqlQuery := `
+		SELECT title, path, source_type 
+		FROM search_cache 
+		WHERE search_cache MATCH ? 
+		ORDER BY rank 
+		LIMIT ?
+	`
+	
+	rows, err := db.conn.Query(sqlQuery, prefixQuery, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search cache: %w", err)
+	}
+	defer rows.Close()
+
+	var results []struct {
+		Title      string
+		Path       string
+		SourceType string
+	}
+	
+	for rows.Next() {
+		var result struct {
+			Title      string
+			Path       string
+			SourceType string
+		}
+		if err := rows.Scan(&result.Title, &result.Path, &result.SourceType); err != nil {
+			return nil, fmt.Errorf("failed to scan search result: %w", err)
+		}
+		results = append(results, result)
+	}
+	
+	return results, nil
+}
+
+// GetSearchCacheCount returns the number of items in the search cache
+func (db *DB) GetSearchCacheCount() (int, error) {
+	query := "SELECT COUNT(*) FROM search_cache"
+	var count int
+	err := db.conn.QueryRow(query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get search cache count: %w", err)
+	}
+	return count, nil
 }
