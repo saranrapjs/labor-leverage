@@ -22,7 +22,7 @@ import (
 	"golang.org/x/text/message"
 )
 
-//go:embed template.html
+//go:embed single.html
 var templateHTML string
 
 //go:embed index.html
