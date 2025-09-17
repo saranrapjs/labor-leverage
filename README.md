@@ -39,7 +39,7 @@ I'd initially built the service to presume all of the data being backfilled out 
 
 ## Running locally
 
-You'll need the Go toolchain. Run the server:
+You'll need the Go toolchain, and [Git LFS](https://git-lfs.com). Run the server:
 
 ```shell
 go run cmd/server/main.go
