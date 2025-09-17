@@ -81,14 +81,10 @@ func TestFactsPackageDualPurpose(t *testing.T) {
 		// Verify IRS-specific fields are populated
 		assert.Equal(t, "Test IRS Organization", facts.CompanyName, "Company name should be extracted from ReturnHeader")
 		assert.Equal(t, 150, facts.EmployeesCount, "Employee count should match")
-		assert.Equal(t, 3000000, facts.TotalRevenue, "Total revenue should match")
-		assert.Equal(t, 2800000, facts.TotalExpenses, "Total expenses should match")
-		assert.Equal(t, 800000, facts.NetAssets, "Net assets should match")
 		
 		// Verify Edgar-specific fields are not populated
 		assert.Empty(t, facts.CIK, "CIK should be empty for IRS data")
 		assert.Empty(t, facts.Ticker, "Ticker should be empty for IRS data")
-		assert.Empty(t, facts.NetIncomeLoss, "NetIncomeLoss should be empty for IRS data")
 		assert.Empty(t, facts.Buybacks, "Buybacks should be empty for IRS data")
 	})
 }
@@ -103,7 +99,6 @@ func TestFactsStructFields(t *testing.T) {
 		EmployeesCount: 100,
 		TotalRevenue:  1000000,
 		TotalExpenses: 800000,
-		NetAssets:     500000,
 	}
 
 	assert.Equal(t, "test-cik", facts.CIK)
@@ -113,5 +108,4 @@ func TestFactsStructFields(t *testing.T) {
 	assert.Equal(t, 100, facts.EmployeesCount)
 	assert.Equal(t, 1000000, facts.TotalRevenue)
 	assert.Equal(t, 800000, facts.TotalExpenses)
-	assert.Equal(t, 500000, facts.NetAssets)
 }

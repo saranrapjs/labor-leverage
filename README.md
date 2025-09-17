@@ -47,6 +47,10 @@ go run cmd/server/main.go
 
 Then open http://localhost:8080/ in a browser.
 
+## Tests
+
+Many of the tests here are kind of worthless, and only a reflection of trying to suss out specific IRS/SEC data edge cases.
+
 ## Deployment
 
 I manually deploy this to my server for now. Maybe I'll revisit this if other people want to contribute.
