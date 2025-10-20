@@ -1,6 +1,6 @@
 # labor-leverage
 
-This houses a service, and several related packages, which power the [Labor Leverage](https://bigboy.us/labor-leverage) website.
+This houses a service, and several related packages, which power the [Labor Leverage](https://bigboy.us/labor-leverage/) website.
 
 ## The service
 
