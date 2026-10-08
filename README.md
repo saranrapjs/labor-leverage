@@ -25,9 +25,7 @@ Handles communication with the SEC's Edgar API, which is really just a specific 
 
 ## The `irs` package
 
-Handles communication with the IRS' historical 990 XML filings for non-profits. These are stored in big collated zip files, but this package uses the [`cloudzip`](https://github.com/ozkatz/cloudzip) and HTTP range headers to only fetch those parts of the ZIP pertinent to the specific non-profit.
-
-Right now some of this is hardcoded around the tax year 2024, because I'm not sure I've yet followed how or when the IRS makes a full year's returns available and/or when non-profits incrementally report their data.
+Handles communication with the IRS' historical 990 XML filings for non-profits. These are stored in big collated zip files, but this package uses the [`cloudzip`](https://github.com/ozkatz/cloudzip) and HTTP range headers to only fetch those parts of the ZIP pertinent to the specific non-profit. Partial data from this year and/or full data from last year provide coverage for the latest-most filing received by the IRS. 
 
 ## The `irsform` package
 

@@ -108,6 +108,11 @@ var indexTemplate = template.Must(template.New("index").Parse(indexHTML))
 
 const cacheMaxAge = 30 * 24 * time.Hour // 1 month
 
+// irsIndexYears is how many of the most recent IRS processing years' 990
+// indexes are loaded: the current year's is always partial, so the previous
+// year's is needed too.
+const irsIndexYears = 2
+
 // OrganizationItem represents a simplified organization with just title and path
 type OrganizationItem struct {
 	Title string `json:"title"` // Company/organization name
@@ -125,8 +130,8 @@ func NewServer(database *db.DB) *Server {
 	userAgent := "Jeff Sisson (jeff@bigboy.us)"
 	client := edgar.NewEdgarClient(userAgent, 10)
 	
-	// Initialize IRS client for 2024 data
-	irsClient, err := irs.NewIRSClient(os.Getenv("CACHE_DIR"), "2024")
+	// Initialize IRS client with the most recent years' indexes
+	irsClient, err := irs.NewIRSClient(os.Getenv("CACHE_DIR"), irsIndexYears)
 	if err != nil {
 		log.Fatalf("Failed to initialize IRS client: %v", err)
 	}
@@ -178,7 +183,7 @@ func (s *Server) ensureSearchCachePopulated() error {
 	
 	// Add IRS data
 	eins := map[string]bool{}
-	for _, nonprofit := range s.irsClient.NonProfits {
+	for _, nonprofit := range s.irsClient.NonProfits() {
 		if _, seen := eins[nonprofit.EIN]; seen {
 			continue
 		}
@@ -279,7 +284,7 @@ func (s *Server) handleOrganizationsJSON(w http.ResponseWriter, r *http.Request)
 	eins := map[string]bool{}
 
 	// Add IRS data
-	for _, nonprofit := range s.irsClient.NonProfits {
+	for _, nonprofit := range s.irsClient.NonProfits() {
 		if _, seen := eins[nonprofit.EIN]; seen {
 			continue
 		}
@@ -476,6 +481,7 @@ func (s *Server) handleIRSCompany(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "EIN parameter is required", http.StatusBadRequest)
 		return
 	}
+	s.irsClient.MaybeRefresh()
 	
 	log.Printf("Fetching IRS data for EIN: %s", ein)
 	
@@ -500,15 +506,8 @@ func (s *Server) handleIRSCompany(w http.ResponseWriter, r *http.Request) {
 	
 	if staleXML {
 		// Find the nonprofit to get the return type
-		var returnType string
-		for _, np := range s.irsClient.NonProfits {
-			if strings.EqualFold(np.EIN, ein) && irsform.IsSupportedReturnType(np.ReturnType) {
-				returnType = np.ReturnType
-				break
-			}
-		}
-		
-		if returnType == "" {
+		nonprofit, ok := s.irsClient.Lookup(ein)
+		if !ok {
 			http.Error(w, fmt.Sprintf("EIN %s not found or unsupported return type", ein), http.StatusNotFound)
 			return
 		}
@@ -523,7 +522,7 @@ func (s *Server) handleIRSCompany(w http.ResponseWriter, r *http.Request) {
 		}
 		
 		// Store the XML data in database
-		if err := s.db.StoreIRSReturn(ein, returnType, "2024", xmlData); err != nil {
+		if err := s.db.StoreIRSReturn(ein, nonprofit.ReturnType, nonprofit.TaxPeriod, xmlData); err != nil {
 			log.Printf("Warning: Failed to store IRS return in database for EIN %s: %v", ein, err)
 			// Continue serving even if storage fails
 		}
@@ -545,6 +544,7 @@ func (s *Server) handleIRSFacts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "EIN parameter is required", http.StatusBadRequest)
 		return
 	}
+	s.irsClient.MaybeRefresh()
 	
 	w.Header().Set("x-ein", ein)
 
@@ -623,19 +623,9 @@ func (s *Server) downloadAndProcessIRSFacts(ctx context.Context, ein string) (*f
 			return nil, fmt.Errorf("failed to fetch company data: %w", err)
 		}
 		
-		// Find the nonprofit to get the return type and tax year
-		var returnType, taxYear string
-		for _, np := range s.irsClient.NonProfits {
-			if strings.EqualFold(np.EIN, ein) {
-				returnType = np.ReturnType
-				taxYear = "2024" // Current year from IRS client
-				break
-			}
-		}
-		
 		// Store the XML data in database
-		if returnType != "" {
-			if err := s.db.StoreIRSReturn(ein, returnType, taxYear, xmlData); err != nil {
+		if nonprofit, ok := s.irsClient.Lookup(ein); ok {
+			if err := s.db.StoreIRSReturn(ein, nonprofit.ReturnType, nonprofit.TaxPeriod, xmlData); err != nil {
 				log.Printf("Warning: Failed to store IRS return in database for EIN %s: %v", ein, err)
 				// Continue processing even if storage fails
 			}

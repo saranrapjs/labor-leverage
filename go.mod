@@ -4,6 +4,7 @@ go 1.24.2
 
 require (
 	github.com/ozkatz/cloudzip v0.0.1
+	github.com/saranrapjs/deflate64 v0.0.0-20261008024432-65e4bb628bb1
 	github.com/stretchr/testify v1.10.0
 	golang.org/x/net v0.40.0
 	golang.org/x/text v0.26.0
